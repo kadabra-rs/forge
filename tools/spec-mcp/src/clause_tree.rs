@@ -10,7 +10,28 @@ pub struct ClauseNode {
     pub level: u8,
     pub line: usize,
     pub body_start: usize,
+    /// End of the clause's full text including subclauses: extends to the
+    /// next clause heading at the same or shallower level, or a shallower
+    /// non-clause heading. Non-clause headings at the same or deeper level
+    /// (e.g. "#### Attributes" following "#### 8.3.3.3.4 Feature") belong to
+    /// the clause, so Markdown section boundaries alone are not enough.
     pub body_end: usize,
+    /// End of the clause's own text: extends to the next clause heading at
+    /// any level (or a shallower non-clause heading), so subclause text is
+    /// excluded but trailing non-clause subsections are kept.
+    pub own_end: usize,
+}
+
+/// Any ATX heading in the document, clause or not, in document order.
+struct Heading {
+    level: u8,
+    line: usize,
+    start: usize,
+    end: usize,
+    /// Clause number if the heading starts one (e.g. "8.3.2"), else None.
+    clause_id: Option<String>,
+    title: String,
+    anchor: String,
 }
 
 pub fn extract_clause_tree(src: &str) -> Result<Vec<ClauseNode>> {
@@ -20,52 +41,77 @@ pub fn extract_clause_tree(src: &str) -> Result<Vec<ClauseNode>> {
         .parse(bytes, None)
         .context("tree-sitter-md failed to parse spec")?;
     let root = tree.block_tree().root_node();
+    let mut headings = Vec::new();
+    collect_headings(&root, bytes, &mut headings);
+
     let mut out = Vec::new();
-    collect_sections(&root, bytes, &mut out);
+    for (i, h) in headings.iter().enumerate() {
+        let Some(id) = &h.clause_id else { continue };
+        let mut body_end = src.len();
+        let mut own_end = None;
+        for h2 in &headings[i + 1..] {
+            let ends_own = h2.clause_id.is_some() || h2.level < h.level;
+            if ends_own && own_end.is_none() {
+                own_end = Some(h2.start);
+            }
+            let ends_subtree = if h2.clause_id.is_some() {
+                h2.level <= h.level
+            } else {
+                h2.level < h.level
+            };
+            if ends_subtree {
+                body_end = h2.start;
+                break;
+            }
+        }
+        out.push(ClauseNode {
+            id: id.clone(),
+            title: h.title.clone(),
+            anchor: h.anchor.clone(),
+            level: h.level,
+            line: h.line,
+            body_start: h.end,
+            body_end,
+            own_end: own_end.unwrap_or(body_end).min(body_end),
+        });
+    }
     Ok(out)
 }
 
-fn collect_sections(node: &Node, src: &[u8], out: &mut Vec<ClauseNode>) {
+fn collect_headings(node: &Node, src: &[u8], out: &mut Vec<Heading>) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            if child.kind() == "section" {
-                if let Some(clause) = parse_section(&child, src) {
-                    out.push(clause);
+            if child.kind() == "atx_heading" {
+                if let Some(h) = parse_heading(&child, src) {
+                    out.push(h);
                 }
-                collect_sections(&child, src, out);
+            } else if child.kind() == "section" {
+                collect_headings(&child, src, out);
             }
         }
     }
 }
 
-fn parse_section(section: &Node, src: &[u8]) -> Option<ClauseNode> {
-    let mut i = 0u32;
-    while i < section.child_count() as u32 {
-        if let Some(child) = section.child(i) {
-            if child.kind() == "atx_heading" {
-                let heading_text = child.utf8_text(src).unwrap_or_default();
-                let level = heading_level(&child)?;
-                let anchor = extract_anchor(heading_text);
-                let raw = raw_title(heading_text);
-                let id = clause_id_from_title(&raw)?;
-                let title = strip_clause_number(&raw);
-                let line = child.start_position().row + 1;
-                let body_start = child.end_byte();
-                let body_end = section.end_byte();
-                return Some(ClauseNode {
-                    id,
-                    title,
-                    anchor,
-                    level,
-                    line,
-                    body_start,
-                    body_end,
-                });
-            }
-        }
-        i += 1;
-    }
-    None
+fn parse_heading(heading: &Node, src: &[u8]) -> Option<Heading> {
+    let heading_text = heading.utf8_text(src).unwrap_or_default();
+    let level = heading_level(heading)?;
+    let anchor = extract_anchor(heading_text);
+    let raw = raw_title(heading_text);
+    let clause_id = clause_id_from_title(&raw);
+    let title = if clause_id.is_some() {
+        strip_clause_number(&raw)
+    } else {
+        raw
+    };
+    Some(Heading {
+        level,
+        line: heading.start_position().row + 1,
+        start: heading.start_byte(),
+        end: heading.end_byte(),
+        clause_id,
+        title,
+        anchor,
+    })
 }
 
 fn heading_level(heading: &Node) -> Option<u8> {

@@ -106,19 +106,24 @@ impl SpecServer {
         })
     }
 
-    pub fn search_sections_impl(&self, spec: SpecId, query: &str) -> Vec<ClauseSummary> {
+    pub fn search_sections_impl(&self, spec: SpecId, query: &str) -> Vec<SearchHitSummary> {
         let Some(index) = self.index(spec) else {
             return vec![];
         };
-        let q = query.to_lowercase();
         index
-            .list_clauses()
-            .iter()
-            .filter(|c| c.id.contains(&q) || c.title.to_lowercase().contains(&q))
-            .map(|c| ClauseSummary {
-                id: c.id.clone(),
-                title: c.title.clone(),
-                anchor: c.anchor.clone(),
+            .search(query)
+            .into_iter()
+            .map(|hit| SearchHitSummary {
+                id: hit.clause.id.clone(),
+                title: hit.clause.title.clone(),
+                anchor: hit.clause.anchor.clone(),
+                matched: if hit.snippet.is_some() {
+                    "body"
+                } else {
+                    "title"
+                }
+                .to_string(),
+                snippet: hit.snippet,
             })
             .collect()
     }
@@ -302,8 +307,27 @@ pub struct SectionResult {
 pub struct SearchQuery {
     /// Which spec to search: "kerml" or "sysml".
     pub spec: SpecId,
-    /// Case-insensitive keyword matched against clause ids and titles.
+    /// Case-insensitive query. Matched as a whole against clause ids and
+    /// titles; body matches require every whitespace-separated token.
     pub query: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchHitSummary {
+    pub id: String,
+    pub title: String,
+    pub anchor: String,
+    /// Where the query matched: "title" (clause id or title) or "body"
+    /// (clause text). Title matches are listed first.
+    pub matched: String,
+    /// For body matches, an excerpt around the first occurrence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchResult {
+    pub clauses: Vec<SearchHitSummary>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -424,14 +448,14 @@ impl SpecServer {
 
     #[tool(
         name = "search_sections",
-        description = "Search clause ids and titles of the KerML or SysML v2 spec by case-insensitive keyword (e.g. \"specialization\", \"redefinition\", \"8.3.4\"). Returns matching clause ids to feed into get_section. Set spec to \"kerml\" or \"sysml\" to choose which spec to search."
+        description = "Full-text search over the KerML or SysML v2 spec, case-insensitive (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Clauses whose id or title contains the query are listed first; then clauses whose body contains every query token, ranked by occurrence count, each with a snippet around the first match. Returns clause ids to feed into get_section. Set spec to \"kerml\" or \"sysml\"."
     )]
     fn search_sections(
         &self,
         Parameters(SearchQuery { spec, query }): Parameters<SearchQuery>,
-    ) -> Result<Json<ClauseListResult>, ErrorData> {
+    ) -> Result<Json<SearchResult>, ErrorData> {
         self.index_or_err(spec)?;
-        Ok(Json(ClauseListResult {
+        Ok(Json(SearchResult {
             clauses: self.search_sections_impl(spec, &query),
         }))
     }
