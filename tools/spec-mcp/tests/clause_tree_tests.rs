@@ -66,6 +66,68 @@ fn body_range_covers_section_content() {
 }
 
 #[test]
+fn same_level_non_clause_sections_belong_to_preceding_clause() {
+    // Mirrors the real spec's abstract-syntax layout: a clause heading
+    // followed by same-level unnumbered subsections holding its content.
+    let src = "\
+### **8.3.3.3 Formal Elements**
+
+#### **8.3.3.3.4 Feature**
+
+#### **Description**
+
+A Feature is a Type.
+
+#### **Attributes**
+
+isComposite : Boolean
+
+#### **8.3.3.3.5 Next**
+
+Next body.
+";
+    let tree = extract_clause_tree(src).unwrap();
+    let feature = tree.iter().find(|n| n.id == "8.3.3.3.4").unwrap();
+    let body = &src[feature.body_start..feature.body_end];
+    assert!(body.contains("A Feature is a Type."));
+    assert!(body.contains("isComposite"));
+    assert!(!body.contains("Next body."));
+    let own = &src[feature.body_start..feature.own_end];
+    assert!(
+        own.contains("isComposite"),
+        "own text keeps trailing subsections"
+    );
+
+    let parent = tree.iter().find(|n| n.id == "8.3.3.3").unwrap();
+    let parent_own = &src[parent.body_start..parent.own_end];
+    assert!(
+        !parent_own.contains("isComposite"),
+        "subclause content is excluded from the parent's own text"
+    );
+    assert!(&src[parent.body_start..parent.body_end].contains("Next body."));
+}
+
+#[test]
+fn own_text_stops_at_child_clause() {
+    let src = "\
+## **7.1 Parent**
+
+Parent prose.
+
+### **7.1.1 Child**
+
+Child prose.
+";
+    let tree = extract_clause_tree(src).unwrap();
+    let parent = tree.iter().find(|n| n.id == "7.1").unwrap();
+    let own = &src[parent.body_start..parent.own_end];
+    assert!(own.contains("Parent prose."));
+    assert!(!own.contains("Child prose."));
+    let body = &src[parent.body_start..parent.body_end];
+    assert!(body.contains("Child prose."), "full body keeps the subtree");
+}
+
+#[test]
 fn extracts_real_spec_clause_tree() {
     let src = std::fs::read_to_string(
         "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",

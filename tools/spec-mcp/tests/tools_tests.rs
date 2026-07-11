@@ -51,6 +51,30 @@ fn list_sections_returns_all_clauses() {
 }
 
 #[test]
+fn search_sections_reports_match_tier_and_snippet() {
+    let md = "## <span id=\"page-51-0\"></span>**7.3.2 Types**\n\nA specialization is asserted between types.\n";
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, md, "", crates_dir).unwrap();
+
+    let title_hits = server.search_sections_impl(SpecId::Kerml, "types");
+    assert_eq!(title_hits.len(), 1);
+    assert_eq!(title_hits[0].matched, "title");
+    assert!(title_hits[0].snippet.is_none());
+
+    let body_hits = server.search_sections_impl(SpecId::Kerml, "asserted");
+    assert_eq!(body_hits.len(), 1);
+    assert_eq!(body_hits[0].id, "7.3.2");
+    assert_eq!(body_hits[0].matched, "body");
+    assert!(
+        body_hits[0]
+            .snippet
+            .as_deref()
+            .unwrap()
+            .contains("asserted")
+    );
+}
+
+#[test]
 fn find_implementation_returns_status() {
     let server = build_test_server();
     let result = server.find_implementation_impl(SpecId::Kerml, "8.2.4.3.1");
@@ -170,6 +194,24 @@ fn embedded_figures_resolve_to_image_bytes() {
             spec.label()
         );
     }
+}
+
+#[test]
+fn get_section_includes_unnumbered_sibling_subsections() {
+    let md = std::fs::read_to_string(
+        "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",
+    )
+    .unwrap();
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, &md, "", crates_dir).unwrap();
+    // Clause 8.3.3.3.4 Feature's content lives under same-level unnumbered
+    // headings (Description, Attributes, ...) that follow its own heading.
+    let section = server.get_section_impl(SpecId::Kerml, "8.3.3.3.4").unwrap();
+    assert_eq!(section.title, "Feature");
+    assert!(
+        section.body_md.contains("isComposite"),
+        "body should include the Attributes subsection"
+    );
 }
 
 #[test]

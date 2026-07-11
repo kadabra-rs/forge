@@ -15,6 +15,21 @@ pub struct FigureRef {
     pub clause_id: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct SearchHit<'a> {
+    pub clause: &'a ClauseNode,
+    /// None for id/title matches; a short excerpt around the first match for
+    /// body matches.
+    pub snippet: Option<String>,
+}
+
+/// Body-only matches are capped so a common word can't flood the result;
+/// id/title matches are never dropped.
+const BODY_MATCH_LIMIT: usize = 20;
+
+/// Characters of context kept on each side of the first match in a snippet.
+const SNIPPET_RADIUS: usize = 100;
+
 static FIGURE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"!\[\]\((_page_[^)]+\.jpeg)\)\s*\n\s*\*\*Figure (\d+)\.\s*(.+?)\*\*").unwrap()
 });
@@ -31,6 +46,11 @@ pub struct SpecIndex {
     figures: Vec<FigureRef>,
     figures_by_clause: HashMap<String, Vec<usize>>,
     anchor_to_clause: HashMap<String, String>,
+    /// Per-clause body text excluding subclauses, aligned with `clauses`.
+    own_texts: Vec<String>,
+    /// ASCII-lowercased `own_texts` (same byte offsets, so match positions
+    /// map 1:1 back to the original text).
+    own_texts_lower: Vec<String>,
 }
 
 impl SpecIndex {
@@ -75,6 +95,69 @@ impl SpecIndex {
         }
         self.clauses.iter().find(|c| c.anchor == anchor)
     }
+
+    /// Two-tier search: clauses whose id or title contains the query come
+    /// first (document order, no snippet), then clauses whose own body text
+    /// contains every whitespace-separated query token, ranked by total
+    /// occurrence count. Matching is ASCII case-insensitive.
+    pub fn search(&self, query: &str) -> Vec<SearchHit<'_>> {
+        let q = query.to_ascii_lowercase();
+        let tokens: Vec<&str> = q.split_whitespace().collect();
+        if tokens.is_empty() {
+            return vec![];
+        }
+
+        let mut hits = Vec::new();
+        let mut body_matches: Vec<(usize, usize)> = Vec::new(); // (score, clause index)
+        for (i, c) in self.clauses.iter().enumerate() {
+            if c.id.contains(&q) || c.title.to_ascii_lowercase().contains(&q) {
+                hits.push(SearchHit {
+                    clause: c,
+                    snippet: None,
+                });
+                continue;
+            }
+            let text = &self.own_texts_lower[i];
+            if tokens.iter().all(|t| text.contains(t)) {
+                let score = tokens.iter().map(|t| text.matches(t).count()).sum();
+                body_matches.push((score, i));
+            }
+        }
+
+        body_matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        body_matches.truncate(BODY_MATCH_LIMIT);
+        hits.extend(body_matches.into_iter().map(|(_, i)| SearchHit {
+            clause: &self.clauses[i],
+            snippet: self.snippet(i, tokens[0]),
+        }));
+        hits
+    }
+
+    fn snippet(&self, clause_idx: usize, token: &str) -> Option<String> {
+        let text = &self.own_texts[clause_idx];
+        let pos = self.own_texts_lower[clause_idx].find(token)?;
+
+        let mut start = pos.saturating_sub(SNIPPET_RADIUS);
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = (pos + token.len() + SNIPPET_RADIUS).min(text.len());
+        while !text.is_char_boundary(end) {
+            end += 1;
+        }
+
+        let mut s = text[start..end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if start > 0 {
+            s.insert(0, '…');
+        }
+        if end < text.len() {
+            s.push('…');
+        }
+        Some(s)
+    }
 }
 
 pub fn build_index(md: &str, bnf_src: &str) -> Result<SpecIndex> {
@@ -96,6 +179,8 @@ pub fn build_index(md: &str, bnf_src: &str) -> Result<SpecIndex> {
 
     let (figures, figures_by_clause) = extract_figures(md, &clauses);
     let anchor_to_clause = build_anchor_map(md, &clauses);
+    let own_texts = extract_own_texts(md, &clauses);
+    let own_texts_lower = own_texts.iter().map(|t| t.to_ascii_lowercase()).collect();
 
     Ok(SpecIndex {
         src: md.to_string(),
@@ -106,7 +191,18 @@ pub fn build_index(md: &str, bnf_src: &str) -> Result<SpecIndex> {
         figures,
         figures_by_clause,
         anchor_to_clause,
+        own_texts,
+        own_texts_lower,
     })
+}
+
+/// Body text of each clause minus its subclauses, so a term that appears only
+/// in a subclause doesn't also match every ancestor.
+fn extract_own_texts(md: &str, clauses: &[ClauseNode]) -> Vec<String> {
+    clauses
+        .iter()
+        .map(|c| md[c.body_start..c.own_end].to_string())
+        .collect()
 }
 
 fn extract_figures(

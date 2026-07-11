@@ -34,6 +34,61 @@ fn index_returns_body_text_for_clause() {
 }
 
 #[test]
+fn search_matches_titles_before_bodies() {
+    let md = "## <span id=\"a\"></span>**7.1 Types**\n\nA type classifies things.\n\n## <span id=\"b\"></span>**7.2 Features**\n\nFeatures relate types to types to types.\n";
+    let idx = build_index(md, "").unwrap();
+    let hits = idx.search("types");
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].clause.id, "7.1");
+    assert!(hits[0].snippet.is_none(), "title match has no snippet");
+    assert_eq!(hits[1].clause.id, "7.2");
+    assert!(
+        hits[1].snippet.as_deref().unwrap().contains("types"),
+        "body match carries a snippet"
+    );
+}
+
+#[test]
+fn search_body_requires_all_tokens() {
+    let md = "## <span id=\"a\"></span>**7.1 Alpha**\n\nowned redefinition here\n\n## <span id=\"b\"></span>**7.2 Beta**\n\nonly redefinition here\n";
+    let idx = build_index(md, "").unwrap();
+    let hits = idx.search("owned redefinition");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].clause.id, "7.1");
+}
+
+#[test]
+fn search_does_not_match_ancestors_on_subclause_text() {
+    let md = "## <span id=\"a\"></span>**7.1 Parent**\n\nParent prose.\n\n### <span id=\"b\"></span>**7.1.1 Child**\n\nThe isComposite flag.\n";
+    let idx = build_index(md, "").unwrap();
+    let hits = idx.search("iscomposite");
+    assert_eq!(hits.len(), 1, "only the child clause should match");
+    assert_eq!(hits[0].clause.id, "7.1.1");
+}
+
+#[test]
+fn search_empty_query_returns_nothing() {
+    let md = "## <span id=\"a\"></span>**7.1 Types**\n\nBody.\n";
+    let idx = build_index(md, "").unwrap();
+    assert!(idx.search("").is_empty());
+    assert!(idx.search("   ").is_empty());
+}
+
+#[test]
+fn search_real_spec_finds_body_only_terms() {
+    let md = std::fs::read_to_string(
+        "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",
+    )
+    .unwrap();
+    let idx = build_index(&md, "").unwrap();
+    // "isComposite" appears in clause bodies but in no clause title.
+    let hits = idx.search("isComposite");
+    assert!(!hits.is_empty(), "body search should find isComposite");
+    assert!(hits.iter().all(|h| h.snippet.is_some()));
+    assert!(hits.len() <= 20, "body matches are capped");
+}
+
+#[test]
 fn builds_index_from_real_spec_and_bnf() {
     let md = std::fs::read_to_string(
         "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",
