@@ -63,19 +63,19 @@ pub fn parse_bnf(src: &str) -> Result<Vec<Production>> {
 
 fn production_name(line: &str) -> Option<String> {
     let candidate = line.split_whitespace().next()?;
-    let name = candidate
-        .trim_end_matches(':')
-        .trim_end_matches('=');
+    let name = candidate.trim_end_matches(':').trim_end_matches('=');
     if name.is_empty() {
+        return None;
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
     if !name
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        .next()
+        .map(|c| c.is_ascii_alphabetic())
+        .unwrap_or(false)
     {
-        return None;
-    }
-    if !name.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
         return None;
     }
     if !line.contains('=') {
