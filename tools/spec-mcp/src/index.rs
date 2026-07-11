@@ -4,8 +4,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::bnf::{parse_bnf, Production};
-use crate::clause_tree::{extract_clause_tree, ClauseNode};
+use crate::bnf::{Production, parse_bnf};
+use crate::clause_tree::{ClauseNode, extract_clause_tree};
 
 #[derive(Clone, Debug)]
 pub struct FigureRef {
@@ -19,9 +19,8 @@ static FIGURE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"!\[\]\((_page_[^)]+\.jpeg)\)\s*\n\s*\*\*Figure (\d+)\.\s*(.+?)\*\*").unwrap()
 });
 
-static SPAN_ANCHOR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"<span id="([^"]+)"></span>"#).unwrap()
-});
+static SPAN_ANCHOR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<span id="([^"]+)"></span>"#).unwrap());
 
 pub struct SpecIndex {
     src: String,
@@ -131,10 +130,7 @@ fn extract_figures(
 
     let mut by_clause: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, f) in figures.iter().enumerate() {
-        by_clause
-            .entry(f.clause_id.clone())
-            .or_default()
-            .push(i);
+        by_clause.entry(f.clause_id.clone()).or_default().push(i);
     }
 
     (figures, by_clause)
@@ -143,9 +139,7 @@ fn extract_figures(
 fn find_clause_for_byte(clauses: &[ClauseNode], byte: usize) -> String {
     let mut best = String::new();
     for c in clauses {
-        if c.body_start <= byte
-            && byte < c.body_end
-            && (best.is_empty() || c.id.len() > best.len())
+        if c.body_start <= byte && byte < c.body_end && (best.is_empty() || c.id.len() > best.len())
         {
             best = c.id.clone();
         }

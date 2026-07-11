@@ -5,15 +5,16 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let md_path = repo_root
-        .join("docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md");
-    let bnf_path = repo_root.join("vendor/SysML-v2-Release/bnf/KerML-textual-bnf.kebnf");
-    let crates_dir = repo_root.join("crates");
+    // Spec text, BNF grammars, and figure images are embedded in the binary;
+    // the only filesystem dependency is the crates/ directory used by
+    // find_implementation, resolved against the cwd unless overridden by the
+    // first CLI argument.
+    let crates_dir = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("crates"));
 
-    let md = std::fs::read_to_string(&md_path)?;
-    let bnf = std::fs::read_to_string(&bnf_path)?;
-    let server = SpecServer::new(md, bnf, crates_dir)?;
+    let server = SpecServer::embedded(crates_dir)?;
 
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let running = server.serve(transport).await?;

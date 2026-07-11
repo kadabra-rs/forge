@@ -48,7 +48,10 @@ fn builds_index_from_real_spec_and_bnf() {
         idx.list_clauses().len()
     );
     assert!(idx.productions().len() > 200);
-    assert!(idx.clause("8.2.4.3.1").is_some(), "8.2.4.3.1 should be a clause");
+    assert!(
+        idx.clause("8.2.4.3.1").is_some(),
+        "8.2.4.3.1 should be a clause"
+    );
     assert!(
         !idx.productions_for_clause("8.2.4.3.1").is_empty(),
         "8.2.4.3.1 should have productions"
@@ -65,7 +68,11 @@ fn extracts_figures_from_real_spec() {
     .unwrap();
     let idx = build_index(&md, "").unwrap();
     let figures = idx.figures();
-    assert!(figures.len() >= 30, "expected >=30 figures, got {}", figures.len());
+    assert!(
+        figures.len() >= 30,
+        "expected >=30 figures, got {}",
+        figures.len()
+    );
     let fig1 = figures.iter().find(|f| f.number == 1).unwrap();
     assert_eq!(fig1.title, "KerML Syntax Layers");
     assert_eq!(fig1.clause_id, "8.3.1");

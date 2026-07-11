@@ -76,10 +76,8 @@ MULTILINE_NOTE =
 
 #[test]
 fn parses_real_kerml_bnf_without_error() {
-    let src = std::fs::read_to_string(
-        "../../vendor/SysML-v2-Release/bnf/KerML-textual-bnf.kebnf",
-    )
-    .expect("read kebnf");
+    let src = std::fs::read_to_string("../../vendor/SysML-v2-Release/bnf/KerML-textual-bnf.kebnf")
+        .expect("read kebnf");
     let productions = parse_bnf(&src).unwrap();
     assert!(
         productions.len() > 200,
@@ -88,7 +86,10 @@ fn parses_real_kerml_bnf_without_error() {
     );
     assert_eq!(productions[0].name, "LINE_TERMINATOR");
     assert_eq!(productions[0].clause_id, "8.2.2.1");
-    let feature = productions.iter().find(|p| p.name == "Feature").expect("Feature production");
+    let feature = productions
+        .iter()
+        .find(|p| p.name == "Feature")
+        .expect("Feature production");
     assert_eq!(feature.clause_id, "8.2.4.3.1");
     let feat_decl = productions
         .iter()
