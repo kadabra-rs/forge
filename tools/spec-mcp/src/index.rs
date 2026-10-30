@@ -231,13 +231,13 @@ impl SpecIndex {
             .map(|&d| ((1.0 + n) / (1.0 + d as f64)).ln() + 1.0)
             .collect();
 
-        // (tf-idf score, clause index, first match position, match length)
-        let mut body_matches: Vec<(f64, usize, usize, usize)> = Vec::new();
+        // (tf-idf score, clause index, first match position)
+        let mut body_matches: Vec<(f64, usize, usize)> = Vec::new();
         for (i, c) in self.clauses.iter().enumerate() {
             if seen.contains(c.id.as_str()) {
                 continue;
             }
-            let Some((counts, pos, len)) = matcher.match_text(&self.own_texts_lower[i]) else {
+            let Some((counts, pos)) = matcher.match_text(&self.own_texts_lower[i]) else {
                 continue;
             };
             let score: f64 = counts
@@ -245,20 +245,20 @@ impl SpecIndex {
                 .enumerate()
                 .map(|(u, &cnt)| cnt as f64 * idf[u])
                 .sum();
-            body_matches.push((score, i, pos, len));
+            body_matches.push((score, i, pos));
         }
 
         body_matches.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         body_matches.truncate(BODY_MATCH_LIMIT);
-        hits.extend(body_matches.into_iter().map(|(_, i, pos, len)| SearchHit {
+        hits.extend(body_matches.into_iter().map(|(_, i, pos)| SearchHit {
             clause: &self.clauses[i],
-            snippet: self.snippet(i, pos, len),
+            snippet: self.snippet(i, pos),
             figure: None,
         }));
         Ok(hits)
     }
 
-    pub(crate) fn snippet(&self, clause_idx: usize, pos: usize, _len: usize) -> Option<String> {
+    pub(crate) fn snippet(&self, clause_idx: usize, pos: usize) -> Option<String> {
         let text = self.own_texts.get(clause_idx)?;
         let spans = sentence_spans(text);
         if spans.is_empty() {
@@ -373,23 +373,23 @@ impl Matcher {
         }
     }
 
-    /// `(per-unit occurrence counts, first match position, first match
-    /// length)`, `None` unless every unit matches (AND semantics).
-    fn match_text(&self, lower: &str) -> Option<(Vec<usize>, usize, usize)> {
+    /// `(per-unit occurrence counts, first match position)`, `None` unless
+    /// every unit matches (AND semantics).
+    fn match_text(&self, lower: &str) -> Option<(Vec<usize>, usize)> {
         let units = self.units(lower)?;
-        let counts = units.iter().map(|u| u.2).collect();
-        let (pos, len, _) = *units.iter().min_by_key(|u| u.0)?;
-        Some((counts, pos, len))
+        let counts = units.iter().map(|u| u.1).collect();
+        let pos = units.iter().map(|u| u.0).min()?;
+        Some((counts, pos))
     }
 
-    /// `(first match position, match length, match count)` per query unit.
-    fn units(&self, lower: &str) -> Option<Vec<(usize, usize, usize)>> {
+    /// `(first match position, match count)` per query unit.
+    fn units(&self, lower: &str) -> Option<Vec<(usize, usize)>> {
         let mut out = Vec::new();
         match self {
             Matcher::Substring { tokens, .. } => {
                 for tok in tokens {
                     let pos = lower.find(tok.as_str())?;
-                    out.push((pos, tok.len(), lower.matches(tok.as_str()).count()));
+                    out.push((pos, lower.matches(tok.as_str()).count()));
                 }
             }
             Matcher::Word { res } => {
@@ -434,18 +434,17 @@ impl Matcher {
     }
 }
 
-/// `(first match position, match length, match count)` for one regex.
-fn scan_re(re: &Regex, lower: &str) -> Option<(usize, usize, usize)> {
+/// `(first match position, match count)` for one regex.
+fn scan_re(re: &Regex, lower: &str) -> Option<(usize, usize)> {
     let mut count = 0;
     let mut first = None;
     for m in re.find_iter(lower) {
         if first.is_none() {
-            first = Some((m.start(), m.len()));
+            first = Some(m.start());
         }
         count += 1;
     }
-    let (pos, len) = first?;
-    Some((pos, len, count))
+    Some((first?, count))
 }
 
 /// `(start, end)` byte spans of the sentences in `text`. A sentence ends at

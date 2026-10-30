@@ -236,15 +236,15 @@ impl SpecServer {
                 continue;
             };
             let count = re.find_iter(lower).count();
-            matches.push((count, i, first.start(), first.len()));
+            matches.push((count, i, first.start()));
         }
         matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         matches.truncate(20);
         let text = matches
             .into_iter()
-            .filter_map(|(_count, i, pos, len)| {
+            .filter_map(|(_count, i, pos)| {
                 let clause = &clauses[i];
-                let snippet = index.snippet(i, pos, len)?;
+                let snippet = index.snippet(i, pos)?;
                 Some(SymbolTextHit {
                     clause_id: clause.id.clone(),
                     title: clause.title.clone(),
