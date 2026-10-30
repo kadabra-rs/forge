@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::assets::{self, SpecId};
 use crate::implementation::find_implementation;
-use crate::index::{SpecIndex, build_index};
+use crate::index::{SearchMode, SpecIndex, build_index};
 
 /// Sections can reference many figures; inline at most this many images per
 /// get_section response. All figures are still listed in the JSON metadata.
@@ -110,26 +110,36 @@ impl SpecServer {
         })
     }
 
-    pub fn search_sections_impl(&self, spec: SpecId, query: &str) -> Vec<SearchHitSummary> {
+    pub fn search_sections_impl(
+        &self,
+        spec: SpecId,
+        query: &str,
+        mode: SearchMode,
+    ) -> Result<Vec<SearchHitSummary>, ErrorData> {
         let Some(index) = self.index(spec) else {
-            return vec![];
+            return Ok(vec![]);
         };
-        index
-            .search(query)
+        let hits = index
+            .search(query, mode)
+            .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?;
+        Ok(hits
             .into_iter()
             .map(|hit| SearchHitSummary {
                 id: hit.clause.id.clone(),
                 title: hit.clause.title.clone(),
                 anchor: hit.clause.anchor.clone(),
-                matched: if hit.snippet.is_some() {
+                matched: if hit.figure.is_some() {
+                    "figure"
+                } else if hit.snippet.is_some() {
                     "body"
                 } else {
                     "title"
                 }
                 .to_string(),
+                figure_number: hit.figure,
                 snippet: hit.snippet,
             })
-            .collect()
+            .collect())
     }
 
     pub fn get_syntax_impl(&self, spec: SpecId, production: &str) -> Vec<ProductionResult> {
@@ -347,6 +357,11 @@ pub struct SearchQuery {
     /// Case-insensitive query. Matched as a whole against clause ids and
     /// titles; body matches require every whitespace-separated token.
     pub query: String,
+    /// Match mode. "substring" (default): case-insensitive raw substrings, all
+    /// tokens must match. "word": whole-word matches only. "regex": the query
+    /// is one case-insensitive Rust regex.
+    #[serde(default)]
+    pub mode: Option<SearchMode>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -354,10 +369,15 @@ pub struct SearchHitSummary {
     pub id: String,
     pub title: String,
     pub anchor: String,
-    /// Where the query matched: "title" (clause id or title) or "body"
-    /// (clause text). Title matches are listed first.
+    /// Where the query matched: "title" (clause id or title), "figure"
+    /// (figure caption) or "body" (clause text). Title matches are listed
+    /// first, then figure caption matches, then body matches.
     pub matched: String,
-    /// For body matches, an excerpt around the first occurrence.
+    /// Printed figure number for "figure" matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub figure_number: Option<u32>,
+    /// For body matches, an excerpt around the first occurrence; for figure
+    /// matches, the caption line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
 }
@@ -561,15 +581,15 @@ impl SpecServer {
 
     #[tool(
         name = "search_sections",
-        description = "Full-text search over the KerML or SysML v2 spec, case-insensitive (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Clauses whose id or title contains the query are listed first; then clauses whose body contains every query token, ranked by occurrence count, each with a snippet around the first match. Returns clause ids to feed into get_section. Set spec to \"kerml\" or \"sysml\"."
+        description = "Full-text search over the KerML or SysML v2 spec (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Optional mode: \"substring\" (default) matches case-insensitive substrings, all tokens required; \"word\" matches whole words; \"regex\" treats the query as one case-insensitive Rust regex. Clauses whose id or title matches come first, then figure-caption matches (matched=\"figure\", with figure_number), then body matches ranked by occurrence count with a snippet. Returns clause ids for get_section. Set spec to \"kerml\" or \"sysml\"."
     )]
     fn search_sections(
         &self,
-        Parameters(SearchQuery { spec, query }): Parameters<SearchQuery>,
+        Parameters(SearchQuery { spec, query, mode }): Parameters<SearchQuery>,
     ) -> Result<Json<SearchResult>, ErrorData> {
         self.index_or_err(spec)?;
         Ok(Json(SearchResult {
-            clauses: self.search_sections_impl(spec, &query),
+            clauses: self.search_sections_impl(spec, &query, mode.unwrap_or_default())?,
         }))
     }
 

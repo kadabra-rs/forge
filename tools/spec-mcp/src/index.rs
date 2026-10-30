@@ -1,11 +1,27 @@
-use anyhow::Result;
-use std::collections::HashMap;
+use anyhow::{Result, bail};
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::bnf::{Production, parse_bnf};
 use crate::clause_tree::{ClauseNode, extract_clause_tree};
+
+/// How `SpecIndex::search` interprets the query string.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    /// Case-insensitive raw substrings; every whitespace-separated token must
+    /// match.
+    #[default]
+    Substring,
+    /// Whole-word matches only.
+    Word,
+    /// The query is one case-insensitive Rust regex.
+    Regex,
+}
 
 #[derive(Clone, Debug)]
 pub struct FigureRef {
@@ -21,9 +37,11 @@ pub struct FigureRef {
 #[derive(Clone, Debug)]
 pub struct SearchHit<'a> {
     pub clause: &'a ClauseNode,
-    /// None for id/title matches; a short excerpt around the first match for
-    /// body matches.
+    /// None for id/title matches; an excerpt around the first match for body
+    /// matches, or the caption line (`Figure N. Title`) for figure matches.
     pub snippet: Option<String>,
+    /// Printed figure number when the hit came from the figure-caption tier.
+    pub figure: Option<u32>,
 }
 
 /// Body-only matches are capped so a common word can't flood the result;
@@ -104,52 +122,86 @@ impl SpecIndex {
         self.clauses.iter().find(|c| c.anchor == anchor)
     }
 
-    /// Two-tier search: clauses whose id or title contains the query come
-    /// first (document order, no snippet), then clauses whose own body text
-    /// contains every whitespace-separated query token, ranked by total
-    /// occurrence count. Matching is ASCII case-insensitive.
-    pub fn search(&self, query: &str) -> Vec<SearchHit<'_>> {
-        let q = query.to_ascii_lowercase();
-        let tokens: Vec<&str> = q.split_whitespace().collect();
-        if tokens.is_empty() {
-            return vec![];
-        }
-
+    /// Three-tier search; the first tier that matches a clause wins for it:
+    /// clauses whose id or title matches (document order, no snippet), then
+    /// figure captions (caption snippet plus `figure`), then clauses whose
+    /// own body text matches every query unit, ranked by total occurrence
+    /// count. Matching is ASCII case-insensitive; see `SearchMode`.
+    pub fn search(&self, query: &str, mode: SearchMode) -> Result<Vec<SearchHit<'_>>> {
+        let matcher = Matcher::build(query, mode)?;
+        let mut seen: HashSet<&str> = HashSet::new();
         let mut hits = Vec::new();
-        let mut body_matches: Vec<(usize, usize)> = Vec::new(); // (score, clause index)
-        for (i, c) in self.clauses.iter().enumerate() {
-            if c.id.contains(&q) || c.title.to_ascii_lowercase().contains(&q) {
+
+        for c in &self.clauses {
+            let id_lower = c.id.to_ascii_lowercase();
+            let title_lower = c.title.to_ascii_lowercase();
+            if matcher.match_title(&id_lower, &title_lower) {
+                seen.insert(c.id.as_str());
                 hits.push(SearchHit {
                     clause: c,
                     snippet: None,
+                    figure: None,
                 });
+            }
+        }
+
+        let mut figure_hits = 0;
+        for f in &self.figures {
+            if figure_hits >= BODY_MATCH_LIMIT {
+                break;
+            }
+            if f.title.is_empty() || seen.contains(f.clause_id.as_str()) {
                 continue;
             }
-            let text = &self.own_texts_lower[i];
-            if tokens.iter().all(|t| text.contains(t)) {
-                let score = tokens.iter().map(|t| text.matches(t).count()).sum();
-                body_matches.push((score, i));
+            if matcher.match_text(&f.title.to_ascii_lowercase()).is_none() {
+                continue;
             }
+            let Some(clause) = self.clause(&f.clause_id) else {
+                continue;
+            };
+            seen.insert(clause.id.as_str());
+            hits.push(SearchHit {
+                clause,
+                snippet: Some(format!("Figure {}. {}", f.number.unwrap_or(0), f.title)),
+                figure: f.number,
+            });
+            figure_hits += 1;
+        }
+
+        // (score, clause index, first match position, match length)
+        let mut body_matches: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for (i, c) in self.clauses.iter().enumerate() {
+            if seen.contains(c.id.as_str()) {
+                continue;
+            }
+            let Some((counts, pos, len)) = matcher.match_text(&self.own_texts_lower[i]) else {
+                continue;
+            };
+            let score: usize = counts.iter().sum();
+            body_matches.push((score, i, pos, len));
         }
 
         body_matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         body_matches.truncate(BODY_MATCH_LIMIT);
-        hits.extend(body_matches.into_iter().map(|(_, i)| SearchHit {
+        hits.extend(body_matches.into_iter().map(|(_, i, pos, len)| SearchHit {
             clause: &self.clauses[i],
-            snippet: self.snippet(i, tokens[0]),
+            snippet: self.snippet(i, pos, len),
+            figure: None,
         }));
-        hits
+        Ok(hits)
     }
 
-    fn snippet(&self, clause_idx: usize, token: &str) -> Option<String> {
+    fn snippet(&self, clause_idx: usize, pos: usize, len: usize) -> Option<String> {
         let text = &self.own_texts[clause_idx];
-        let pos = self.own_texts_lower[clause_idx].find(token)?;
+        if pos > text.len() {
+            return None;
+        }
 
         let mut start = pos.saturating_sub(SNIPPET_RADIUS);
         while !text.is_char_boundary(start) {
             start -= 1;
         }
-        let mut end = (pos + token.len() + SNIPPET_RADIUS).min(text.len());
+        let mut end = (pos + len + SNIPPET_RADIUS).min(text.len());
         while !text.is_char_boundary(end) {
             end += 1;
         }
@@ -166,6 +218,107 @@ impl SpecIndex {
         }
         Some(s)
     }
+}
+
+/// Compiled query, shared by the three search tiers. Title, body and caption
+/// texts are ASCII-lowercased before matching, so only `Regex` mode needs a
+/// case flag: the user pattern itself is built case-insensitive.
+enum Matcher {
+    Substring {
+        /// Whole trimmed lowercased query; title ids/titles match it as one
+        /// substring (legacy behavior).
+        query: String,
+        /// Whitespace-separated tokens; body text must contain each of them.
+        tokens: Vec<String>,
+    },
+    Word {
+        res: Vec<Regex>,
+    },
+    Regex {
+        re: Regex,
+    },
+}
+
+impl Matcher {
+    fn build(query: &str, mode: SearchMode) -> Result<Self> {
+        let q = query.trim().to_ascii_lowercase();
+        if q.is_empty() {
+            bail!("empty query");
+        }
+        Ok(match mode {
+            SearchMode::Substring => Matcher::Substring {
+                tokens: q.split_whitespace().map(str::to_string).collect(),
+                query: q,
+            },
+            SearchMode::Word => Matcher::Word {
+                res: q
+                    .split_whitespace()
+                    .map(|t| Regex::new(&format!(r"\b{}\b", regex::escape(t))))
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            },
+            SearchMode::Regex => Matcher::Regex {
+                re: RegexBuilder::new(query.trim())
+                    .case_insensitive(true)
+                    .build()
+                    .map_err(|err| anyhow::anyhow!("invalid regex: {err}"))?,
+            },
+        })
+    }
+
+    fn match_title(&self, id_lower: &str, title_lower: &str) -> bool {
+        match self {
+            Matcher::Substring { query, .. } => {
+                id_lower.contains(query.as_str()) || title_lower.contains(query.as_str())
+            }
+            Matcher::Word { res } => res
+                .iter()
+                .all(|re| re.is_match(id_lower) || re.is_match(title_lower)),
+            Matcher::Regex { re } => re.is_match(id_lower) || re.is_match(title_lower),
+        }
+    }
+
+    /// `(per-unit occurrence counts, first match position, first match
+    /// length)`, `None` unless every unit matches (AND semantics).
+    fn match_text(&self, lower: &str) -> Option<(Vec<usize>, usize, usize)> {
+        let units = self.units(lower)?;
+        let counts = units.iter().map(|u| u.2).collect();
+        let (pos, len, _) = *units.iter().min_by_key(|u| u.0)?;
+        Some((counts, pos, len))
+    }
+
+    /// `(first match position, match length, match count)` per query unit.
+    fn units(&self, lower: &str) -> Option<Vec<(usize, usize, usize)>> {
+        let mut out = Vec::new();
+        match self {
+            Matcher::Substring { tokens, .. } => {
+                for tok in tokens {
+                    let pos = lower.find(tok.as_str())?;
+                    out.push((pos, tok.len(), lower.matches(tok.as_str()).count()));
+                }
+            }
+            Matcher::Word { res } => {
+                for re in res {
+                    out.push(scan_re(re, lower)?);
+                }
+            }
+            Matcher::Regex { re } => out.push(scan_re(re, lower)?),
+        }
+        Some(out)
+    }
+}
+
+/// `(first match position, match length, match count)` for one regex.
+fn scan_re(re: &Regex, lower: &str) -> Option<(usize, usize, usize)> {
+    let mut count = 0;
+    let mut first = None;
+    for m in re.find_iter(lower) {
+        if first.is_none() {
+            first = Some((m.start(), m.len()));
+        }
+        count += 1;
+    }
+    let (pos, len) = first?;
+    Some((pos, len, count))
 }
 
 pub fn build_index(md: &str, bnf_src: &str) -> Result<SpecIndex> {

@@ -1,4 +1,5 @@
 use spec_mcp::assets::SpecId;
+use spec_mcp::index::SearchMode;
 use spec_mcp::tools::SpecServer;
 
 fn build_test_server() -> SpecServer {
@@ -36,7 +37,8 @@ fn unloaded_spec_returns_nothing() {
     assert!(server.list_sections_impl(SpecId::Sysml).is_empty());
     assert!(
         server
-            .search_sections_impl(SpecId::Sysml, "types")
+            .search_sections_impl(SpecId::Sysml, "types", SearchMode::default())
+            .unwrap()
             .is_empty()
     );
 }
@@ -56,12 +58,16 @@ fn search_sections_reports_match_tier_and_snippet() {
     let crates_dir = std::path::PathBuf::from("../../crates");
     let server = SpecServer::with_spec_source(SpecId::Kerml, md, "", crates_dir).unwrap();
 
-    let title_hits = server.search_sections_impl(SpecId::Kerml, "types");
+    let title_hits = server
+        .search_sections_impl(SpecId::Kerml, "types", SearchMode::default())
+        .unwrap();
     assert_eq!(title_hits.len(), 1);
     assert_eq!(title_hits[0].matched, "title");
     assert!(title_hits[0].snippet.is_none());
 
-    let body_hits = server.search_sections_impl(SpecId::Kerml, "asserted");
+    let body_hits = server
+        .search_sections_impl(SpecId::Kerml, "asserted", SearchMode::default())
+        .unwrap();
     assert_eq!(body_hits.len(), 1);
     assert_eq!(body_hits[0].id, "7.3.2");
     assert_eq!(body_hits[0].matched, "body");
@@ -72,6 +78,63 @@ fn search_sections_reports_match_tier_and_snippet() {
             .unwrap()
             .contains("asserted")
     );
+}
+
+#[test]
+fn search_sections_honours_word_mode() {
+    let md = "## <span id=\"page-51-0\"></span>**7.3.2 Types**\n\nA specialized classifier classifies things.\n";
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, md, "", crates_dir).unwrap();
+
+    // "type" only occurs inside "Types"/"types" — no whole word.
+    let word_hits = server
+        .search_sections_impl(SpecId::Kerml, "type", SearchMode::Word)
+        .unwrap();
+    assert!(word_hits.is_empty());
+
+    let body_hits = server
+        .search_sections_impl(SpecId::Kerml, "classifier", SearchMode::Word)
+        .unwrap();
+    assert_eq!(body_hits.len(), 1);
+    assert_eq!(body_hits[0].matched, "body");
+}
+
+#[test]
+fn search_sections_reports_figure_matches() {
+    let md = "## <span id=\"page-51-0\"></span>**7.3.2 Diagrams**\n\n\
+              ![](_page_1_Figure_1.jpeg)\n\n**Figure 1. Widget diagram**\n";
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, md, "", crates_dir).unwrap();
+
+    let hits = server
+        .search_sections_impl(SpecId::Kerml, "widget", SearchMode::default())
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, "7.3.2");
+    assert_eq!(hits[0].matched, "figure");
+    assert_eq!(hits[0].figure_number, Some(1));
+    assert!(
+        hits[0]
+            .snippet
+            .as_deref()
+            .unwrap()
+            .contains("Widget diagram")
+    );
+}
+
+#[test]
+fn search_sections_word_mode_on_real_spec() {
+    let md = std::fs::read_to_string(
+        "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",
+    )
+    .unwrap();
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, &md, "", crates_dir).unwrap();
+    let hits = server
+        .search_sections_impl(SpecId::Kerml, "conjugates", SearchMode::Word)
+        .unwrap();
+    assert!(!hits.is_empty(), "KerML prose uses 'conjugates' 42 times");
+    assert!(hits.iter().all(|h| h.matched == "body"));
 }
 
 #[test]
