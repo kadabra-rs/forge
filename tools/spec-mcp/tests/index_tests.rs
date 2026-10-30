@@ -1,6 +1,5 @@
 use spec_mcp::index::build_index;
 
-
 /// Counts image links directly followed (within a small window, optionally
 /// through a Markdown heading marker) by a `**Figure N.` caption — the same
 /// notion the index implements, derived independently from the Markdown.
@@ -141,7 +140,11 @@ fn extracts_figures_from_real_spec() {
     .unwrap();
     let idx = build_index(&md, "").unwrap();
     let figures = idx.figures();
-    assert_eq!(figures.len(), md.matches("![](_page_").count(), "one entry per embedded image link");
+    assert_eq!(
+        figures.len(),
+        md.matches("![](_page_").count(),
+        "one entry per embedded image link"
+    );
     let fig1 = figures.iter().find(|f| f.number == Some(1)).unwrap();
     assert_eq!(fig1.title, "KerML Syntax Layers");
     assert_eq!(fig1.clause_id, "8.3.1");
