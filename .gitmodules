@@ -1,3 +1,3 @@
 [submodule "vendor/SysML-v2-Release"]
     path = vendor/SysML-v2-Release
-    url = git@github.com:Systems-Modeling/SysML-v2-Release.git
+    url = https://github.com/Systems-Modeling/SysML-v2-Release.git

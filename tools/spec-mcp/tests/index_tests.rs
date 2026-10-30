@@ -1,5 +1,22 @@
 use spec_mcp::index::build_index;
 
+/// Counts image links directly followed (within a small window, optionally
+/// through a Markdown heading marker) by a `**Figure N.` caption — the same
+/// notion the index implements, derived independently from the Markdown.
+fn expected_captioned(md: &str) -> usize {
+    let mut count = 0;
+    let mut from = 0;
+    while let Some(off) = md[from..].find("![](_page_") {
+        let i = from + off;
+        let link_end = md[i..].find(')').map(|j| i + j + 1).unwrap_or(md.len());
+        let window: String = md[link_end..].chars().take(80).collect();
+        if window.contains("**Figure ") {
+            count += 1;
+        }
+        from = link_end;
+    }
+    count
+}
 #[test]
 fn index_joins_clauses_and_productions() {
     let md = "## <span id=\"page-51-0\"></span>**7.3.2 Types**\n\n## <span id=\"page-52-0\"></span>**7.3.2.3 Specialization**\n";
@@ -123,14 +140,130 @@ fn extracts_figures_from_real_spec() {
     .unwrap();
     let idx = build_index(&md, "").unwrap();
     let figures = idx.figures();
-    assert!(
-        figures.len() >= 30,
-        "expected >=30 figures, got {}",
-        figures.len()
+    assert_eq!(
+        figures.len(),
+        md.matches("![](_page_").count(),
+        "one entry per embedded image link"
     );
-    let fig1 = figures.iter().find(|f| f.number == 1).unwrap();
+    let fig1 = figures.iter().find(|f| f.number == Some(1)).unwrap();
     assert_eq!(fig1.title, "KerML Syntax Layers");
     assert_eq!(fig1.clause_id, "8.3.1");
     let figs_for_clause = idx.figures_for_clause("8.3.1");
     assert!(!figs_for_clause.is_empty(), "8.3.1 should have figures");
+}
+
+#[test]
+fn indexes_every_embedded_image_link() {
+    use spec_mcp::assets::{SpecId, spec_md};
+    for spec in [SpecId::Kerml, SpecId::Sysml] {
+        let md = spec_md(spec);
+        let idx = build_index(md, "").unwrap();
+        let links = md.matches("![](_page_").count();
+        assert_eq!(
+            idx.figures().len(),
+            links,
+            "{} should index every embedded image link",
+            spec.label()
+        );
+        let numbered = idx.figures().iter().filter(|f| f.number.is_some()).count();
+        assert_eq!(
+            numbered,
+            expected_captioned(md),
+            "{} captioned figures should keep their number",
+            spec.label()
+        );
+        assert!(
+            idx.figures()
+                .iter()
+                .filter(|f| f.number.is_none())
+                .all(|f| f.title.is_empty()),
+            "{} uncaptioned figures should have an empty title",
+            spec.label()
+        );
+        let unique: std::collections::HashSet<&str> = idx
+            .figures()
+            .iter()
+            .map(|f| f.image_path.as_str())
+            .collect();
+        assert_eq!(
+            unique.len(),
+            links,
+            "{} image files should be distinct",
+            spec.label()
+        );
+    }
+}
+
+#[test]
+fn indexed_figures_resolve_to_embedded_bytes() {
+    use spec_mcp::assets::{SpecId, figure_bytes, spec_md};
+    for spec in SpecId::ALL {
+        let idx = build_index(spec_md(spec), "").unwrap();
+        for f in idx.figures() {
+            let bytes = figure_bytes(spec, &f.image_path).unwrap_or_else(|| {
+                panic!("{}: image '{}' is not embedded", spec.label(), f.image_path)
+            });
+            assert_eq!(
+                &bytes[..2],
+                &[0xFF, 0xD8],
+                "{}: '{}' is not a JPEG",
+                spec.label(),
+                f.image_path
+            );
+        }
+    }
+}
+
+#[test]
+fn uncaptioned_figures_are_indexed_without_number() {
+    use spec_mcp::assets::{SpecId, spec_md};
+    let idx = build_index(spec_md(SpecId::Sysml), "").unwrap();
+    let fig = idx
+        .figures()
+        .iter()
+        .find(|f| f.image_path == "_page_107_Figure_0.jpeg")
+        .expect("uncaptioned SysML diagram should be indexed");
+    assert_eq!(fig.number, None);
+    assert_eq!(fig.title, "");
+    assert!(
+        !fig.clause_id.is_empty(),
+        "uncaptioned figure should still be attributed to a clause"
+    );
+    assert!(
+        idx.figures_for_clause(&fig.clause_id)
+            .iter()
+            .any(|f| f.image_path == fig.image_path),
+        "figures_for_clause should include the uncaptioned figure"
+    );
+}
+
+#[test]
+fn captioned_figures_keep_number_and_title() {
+    use spec_mcp::assets::{SpecId, spec_md};
+    for (spec, title) in [
+        (SpecId::Kerml, "KerML Syntax Layers"),
+        (SpecId::Sysml, "SysML Language Architecture"),
+    ] {
+        let idx = build_index(spec_md(spec), "").unwrap();
+        let fig = idx
+            .figures()
+            .iter()
+            .find(|f| f.number == Some(1))
+            .unwrap_or_else(|| panic!("{} should have a captioned Figure 1", spec.label()));
+        assert_eq!(fig.title, title);
+        assert!(!fig.image_path.is_empty());
+    }
+}
+
+#[test]
+fn heading_form_caption_attaches() {
+    use spec_mcp::assets::{SpecId, spec_md};
+    let idx = build_index(spec_md(SpecId::Sysml), "").unwrap();
+    let f63 = idx
+        .figures()
+        .iter()
+        .find(|f| f.number == Some(63))
+        .expect("heading-form caption (# **Figure 63. …**) attaches");
+    assert_eq!(f63.title, "Variant engine4Cyl");
+    assert_eq!(f63.image_path, "_page_673_Figure_1.jpeg");
 }

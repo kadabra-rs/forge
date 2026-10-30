@@ -224,7 +224,37 @@ fn get_section_lists_figures_for_clause() {
     let server = SpecServer::with_spec_source(SpecId::Kerml, &md, "", crates_dir).unwrap();
     let section = server.get_section_impl(SpecId::Kerml, "8.3.1").unwrap();
     assert!(
-        section.figures.iter().any(|f| f.number == 1),
+        section.figures.iter().any(|f| f.number == Some(1)),
         "clause 8.3.1 should list Figure 1"
     );
+}
+
+#[test]
+fn get_section_lists_uncaptioned_figures() {
+    let server = SpecServer::embedded(std::path::PathBuf::from("../../crates")).unwrap();
+    let mut hit = None;
+    for clause in server.list_sections_impl(SpecId::Sysml) {
+        let section = server.get_section_impl(SpecId::Sysml, &clause.id).unwrap();
+        if let Some(fig) = section.figures.iter().find(|f| f.number.is_none()) {
+            let fig = fig.clone();
+            hit = Some((section, fig));
+            break;
+        }
+    }
+    let (section, fig) = hit.expect("some SysML clause should list an uncaptioned diagram");
+    assert_eq!(fig.title, "", "uncaptioned figures have no title");
+    assert!(
+        section.body_md.contains(&fig.image_file),
+        "the clause body links the uncaptioned image"
+    );
+    // Images inlined by get_section (first 6) must all be embedded.
+    let inline: Vec<_> = section.figures.iter().take(6).collect();
+    assert!(!inline.is_empty());
+    for f in inline {
+        assert!(
+            spec_mcp::assets::figure_bytes(SpecId::Sysml, &f.image_file).is_some(),
+            "'{}' must be embedded so it can be inlined",
+            f.image_file
+        );
+    }
 }

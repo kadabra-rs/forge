@@ -113,6 +113,32 @@ IMPORTANT:
 - `vendor/SysML-v2-Release/bnf/KerML-textual-bnf.kebnf` contains grammar rules.
 - `vendor/KerML-v1/` holds the KerML 1.0 kernel Data Type + Function libraries (`.kerml` + `.kpar` archives) — source material for B2 (stdlib-from-files) and D3 (KPAR).
 
+## Spec Tooling (tools/)
+
+- **`tools/spec-mcp`** — the `spec` MCP server from `.mcp.json`: an authoritative
+  documentation oracle for the OMG KerML 1.0 + SysML v2 specs. Embeds (at compile
+  time, in the binary) both spec Markdown, every figure JPEG, the official `.kebnf`
+  grammars, and the vendor worked-example model corpus (`list_examples`/`get_example`).
+  It answers "how does the spec say to model this?" with clause/BNF citations —
+  it does NOT validate models. Standalone Cargo project (own workspace, not a root
+  member): `cd tools/spec-mcp && cargo test`. Release: push tag `spec-mcp-vX.Y.Z`
+  (version must match `Cargo.toml` and `npm/package.json`) →
+  `.github/workflows/spec-mcp-release.yml` builds 4 platforms, publishes the GitHub
+  release (+`SHA256SUMS.txt`) and the npm launcher `@kadabra-rs/spec-mcp`
+  (`npx -y @kadabra-rs/spec-mcp` downloads, checksum-verifies, caches the binary).
+- **`tools/install-sysml-tooling.sh`** — installs latest `spec42` (the SysML v2 /
+  KerML validator CLI, verified against the release `SHA256SUMS.txt`) and `sysand`
+  (the SysML v2/KerML package manager; no upstream checksums, HTTPS download only)
+  into `~/.local/bin`.
+  Validation of `.sysml`/`.kerml` files goes through
+  `spec42 check --format json` → `spec42 explain-diagnostic` → `spec42 model-export`
+  (spec42 upstream removed its own MCP server in v0.50.0; the CLI is the surface).
+- **`.omp/skills/sysml-modeling/SKILL.md`** — canonical agent skill tying the two
+  together: ground syntax/semantics in the oracle (never invent concrete syntax),
+  learn shape from official examples, then validate with spec42. Shipped by
+  `spec-mcp skill install` (npm launcher) and by `npx skills add kadabra-rs/forge`
+  (root `skills.sh.json` points discovery at `./.omp/skills`).
+
 ## Progress Tracking
 
 Current progress is tracked in `docs/plans/progress.md`. Check this file at the start of each session when continuing work. The design spec lives at `docs/plans/2026-02-15-kermlc-compiler-design.md`.

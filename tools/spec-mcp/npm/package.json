@@ -1,0 +1,32 @@
+{
+  "name": "@kadabra-rs/spec-mcp",
+  "version": "0.2.0",
+  "description": "Self-contained MCP server for the OMG KerML 1.0 and SysML v2 specifications: clause text, official BNF grammars, figures, and worked-example models, embedded in one binary.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kadabra-rs/forge.git",
+    "directory": "tools/spec-mcp/npm"
+  },
+  "homepage": "https://github.com/kadabra-rs/forge/tree/main/tools/spec-mcp/npm",
+  "keywords": ["mcp", "sysml", "sysml-v2", "kerml", "omg", "specification", "mbse"],
+  "bin": {
+    "spec-mcp": "bin/spec-mcp.mjs"
+  },
+  "files": [
+    "bin/spec-mcp.mjs",
+    "skill",
+    "README.md"
+  ],
+  "scripts": {
+    "prepare": "node scripts/copy-skill.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
