@@ -51,6 +51,21 @@ FeatureDeclaration : Feature =
     assert_eq!(productions[0].name, "FeatureDeclaration");
     assert_eq!(productions[0].clause_id, "8.2.3.1");
     assert_eq!(productions[0].body.trim(), "'feature' FeatureName?");
+    assert_eq!(productions[0].supertype.as_deref(), Some("Feature"));
+}
+
+#[test]
+fn parses_plain_production_without_supertype() {
+    let src = "\
+// Clause 8.2.4.1.2 Specialization
+
+Specialization =
+    'specializes'
+";
+    let productions = parse_bnf(src).unwrap();
+    assert_eq!(productions.len(), 1);
+    assert_eq!(productions[0].name, "Specialization");
+    assert_eq!(productions[0].supertype, None);
 }
 
 #[test]

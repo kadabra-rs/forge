@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bnf::{Production, parse_bnf};
 use crate::clause_tree::{ClauseNode, extract_clause_tree};
+use crate::symbols::SymbolIndex;
 
 /// How `SpecIndex::search` interprets the query string.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -77,6 +78,8 @@ pub struct SpecIndex {
     /// ASCII-lowercased `own_texts` (same byte offsets, so match positions
     /// map 1:1 back to the original text).
     own_texts_lower: Vec<String>,
+    /// Grammar cross-reference index (definitions, references, keywords).
+    symbols: SymbolIndex,
 }
 
 impl SpecIndex {
@@ -132,13 +135,24 @@ impl SpecIndex {
             .unwrap_or_default()
     }
 
+    pub fn figures(&self) -> &[FigureRef] {
+        &self.figures
+    }
+
     pub fn body_for_clause(&self, clause_id: &str) -> Option<&str> {
         let clause = self.clause(clause_id)?;
         Some(&self.src[clause.body_start..clause.body_end])
     }
 
-    pub fn figures(&self) -> &[FigureRef] {
-        &self.figures
+    /// Symbol cross-reference index over the productions.
+    pub fn symbols(&self) -> &SymbolIndex {
+        &self.symbols
+    }
+
+    /// ASCII-lowercased per-clause own body texts (crate-internal for the
+    /// `find_symbol` text tier; match positions map 1:1 to `own_texts`).
+    pub(crate) fn own_texts_lower(&self) -> &[String] {
+        &self.own_texts_lower
     }
 
     pub fn figures_for_clause(&self, clause_id: &str) -> Vec<&FigureRef> {
@@ -224,7 +238,7 @@ impl SpecIndex {
         Ok(hits)
     }
 
-    fn snippet(&self, clause_idx: usize, pos: usize, len: usize) -> Option<String> {
+    pub(crate) fn snippet(&self, clause_idx: usize, pos: usize, len: usize) -> Option<String> {
         let text = &self.own_texts[clause_idx];
         if pos > text.len() {
             return None;
@@ -370,6 +384,7 @@ pub fn build_index(md: &str, bnf_src: &str) -> Result<SpecIndex> {
             .or_default()
             .push(i);
     }
+    let symbols = SymbolIndex::build(&productions);
 
     let (figures, figures_by_clause) = extract_figures(md, &clauses);
     let anchor_to_clause = build_anchor_map(md, &clauses);
@@ -387,6 +402,7 @@ pub fn build_index(md: &str, bnf_src: &str) -> Result<SpecIndex> {
         anchor_to_clause,
         own_texts,
         own_texts_lower,
+        symbols,
     })
 }
 

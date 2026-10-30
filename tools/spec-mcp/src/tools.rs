@@ -1,8 +1,9 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use base64::Engine as _;
+use regex::RegexBuilder;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{CallToolResult, Content, ErrorData};
 use rmcp::tool;
@@ -13,6 +14,7 @@ use crate::assets::{self, SpecId};
 use crate::clause_tree::ClauseNode;
 use crate::implementation::find_implementation;
 use crate::index::{SearchMode, SpecIndex, build_index};
+use crate::symbols::SymbolKind;
 
 /// Sections can reference many figures; inline at most this many images per
 /// get_section response. All figures are still listed in the JSON metadata.
@@ -190,6 +192,74 @@ impl SpecServer {
             .collect()
     }
 
+    /// Map an identifier to the grammar productions that define, reference,
+    /// or quote it, plus the clauses whose prose mentions it.
+    pub fn find_symbol_impl(&self, spec: SpecId, symbol: &str) -> Result<SymbolResult, ErrorData> {
+        let index = self.index_or_err(spec)?;
+        let sym = symbol.trim();
+        if sym.is_empty() {
+            return Err(ErrorData::invalid_params("symbol must not be empty", None));
+        }
+
+        // Grammar tier: exact keys first, then substring keys; dedup by
+        // (production name, kind), capped.
+        let (exact, partial) = index.symbols().lookup(sym, index.productions());
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut grammar = Vec::new();
+        for (p, occ) in exact.iter().chain(partial.iter()) {
+            let kind = kind_name(occ.kind).to_string();
+            if !seen.insert((p.name.clone(), kind.clone())) {
+                continue;
+            }
+            grammar.push(SymbolGrammarHit {
+                production: p.name.clone(),
+                supertype: p.supertype.clone(),
+                body: p.body.clone(),
+                clause_id: p.clause_id.clone(),
+                line: p.line,
+                kind,
+            });
+        }
+        grammar.truncate(30);
+
+        // Text tier: word-start prefix match in each clause's own body,
+        // ranked by occurrence count then document order.
+        let escaped = regex::escape(&sym.to_ascii_lowercase());
+        let re = RegexBuilder::new(&format!(r"\b{}", escaped))
+            .case_insensitive(true)
+            .build()
+            .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+        let clauses = index.list_clauses();
+        let mut matches = Vec::new();
+        for (i, lower) in index.own_texts_lower().iter().enumerate() {
+            let Some(first) = re.find(lower) else {
+                continue;
+            };
+            let count = re.find_iter(lower).count();
+            matches.push((count, i, first.start(), first.len()));
+        }
+        matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        matches.truncate(20);
+        let text = matches
+            .into_iter()
+            .filter_map(|(_count, i, pos, len)| {
+                let clause = &clauses[i];
+                let snippet = index.snippet(i, pos, len)?;
+                Some(SymbolTextHit {
+                    clause_id: clause.id.clone(),
+                    title: clause.title.clone(),
+                    snippet,
+                })
+            })
+            .collect();
+
+        Ok(SymbolResult {
+            symbol: sym.to_string(),
+            grammar,
+            text,
+        })
+    }
+
     pub fn find_implementation_impl(&self, spec: SpecId, clause_id: &str) -> ImplResult {
         if !self.crates_dir.exists() {
             return ImplResult {
@@ -351,6 +421,16 @@ fn image_content(spec: SpecId, image_file: &str) -> Option<Content> {
     Some(Content::image(data, "image/jpeg"))
 }
 
+/// Wire-level name of a [`SymbolKind`] (`"definition" | "reference" |
+/// "keyword"`).
+fn kind_name(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Definition => "definition",
+        SymbolKind::Reference => "reference",
+        SymbolKind::Keyword => "keyword",
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClauseSummary {
     pub id: String,
@@ -479,6 +559,42 @@ pub struct ProductionResult {
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyntaxResult {
     pub productions: Vec<ProductionResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolQuery {
+    /// Which spec to search: "kerml" or "sysml".
+    pub spec: SpecId,
+    /// Identifier: keyword ("conjugates"), production ("Conjugation"), or
+    /// model-level name ("isComposite", "PortUsage").
+    pub symbol: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolGrammarHit {
+    pub production: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supertype: Option<String>,
+    /// Full EBNF right-hand side.
+    pub body: String,
+    pub clause_id: String,
+    pub line: usize,
+    /// "definition" | "reference" | "keyword".
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolTextHit {
+    pub clause_id: String,
+    pub title: String,
+    pub snippet: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolResult {
+    pub symbol: String,
+    pub grammar: Vec<SymbolGrammarHit>,
+    pub text: Vec<SymbolTextHit>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -680,6 +796,18 @@ impl SpecServer {
     }
 
     #[tool(
+        name = "find_symbol",
+        description = "Map any identifier — keyword ('conjugates'), grammar production (Conjugation), or model-level name (isComposite, PortUsage) — to where the spec defines and uses it: grammar hits (productions declaring, referencing, or quoting the name, with full EBNF body and defining clause) and text hits (clauses whose prose mentions it, with snippets). Exact matches first, then substring. Complements get_syntax, which searches production names only."
+    )]
+    fn find_symbol(
+        &self,
+        Parameters(SymbolQuery { spec, symbol }): Parameters<SymbolQuery>,
+    ) -> Result<Json<SymbolResult>, ErrorData> {
+        let result = self.find_symbol_impl(spec, &symbol)?;
+        Ok(Json(result))
+    }
+
+    #[tool(
         name = "find_implementation",
         description = "Map a KerML/SysML spec clause to kermlc compiler code: derives expected lexer/parser symbols from the clause's BNF productions and greps the forge crates/ directory for them. Reports Implemented / NotStarted / OutOfScope with file:line entry points. Only works when the server runs inside the forge repo."
     )]
@@ -752,7 +880,8 @@ impl rmcp::ServerHandler for SpecServer {
              systems-modeling layer built on KerML). Typical flow: spec_toc to \
              see the outline, search_sections to locate a clause, get_section to \
              read it (figures arrive inline as images), get_syntax for grammar \
-             productions, follow_link to chase cross-references, \
+             productions, find_symbol to map any identifier to its defining clause \
+             and grammar production, follow_link to chase cross-references, \
              find_implementation to map a clause to kermlc compiler code. The complete \
              OMG worked-example model corpus (`.kerml` and `.sysml` sources) is embedded \
              too: list_examples lists it, get_example returns any model's full text, so \

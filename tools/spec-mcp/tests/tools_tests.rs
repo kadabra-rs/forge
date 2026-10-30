@@ -420,3 +420,120 @@ fn spec_toc_real_spec_chapters() {
         cur = &cur.children[pos];
     }
 }
+
+#[test]
+fn find_symbol_maps_identifier_to_grammar_and_prose() {
+    let md = "## <span id=\"page-51-0\"></span>**7.3.2 Types**\n\n\
+              A feature usage may be isComposite in its owning type.\n";
+    let bnf = "// Clause 8.2.4.1.2 Specialization\n\nSpecialization =\n    'specializes'\n\n\
+              // Clause 8.2.4.3.1 Features\n\nFeatureDeclaration : Feature =\n    'feature'\n";
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, md, bnf, crates_dir).unwrap();
+
+    // Text tier: the prose mentions isComposite; the grammar tier is empty
+    // for it (no production names, keywords, or body ids match).
+    let is_composite = server
+        .find_symbol_impl(SpecId::Kerml, "isComposite")
+        .unwrap();
+    assert!(
+        !is_composite.text.is_empty(),
+        "prose mentioning isComposite should produce a text hit"
+    );
+    assert!(
+        is_composite.text[0].snippet.contains("isComposite"),
+        "snippet should contain the matched text: {:?}",
+        is_composite.text[0].snippet
+    );
+    assert!(
+        is_composite.grammar.is_empty(),
+        "no grammar term matches isComposite: {:?}",
+        is_composite.grammar
+    );
+
+    // Grammar tier: 'specializes' is a quoted keyword in Specialization;
+    // 'feature' is a quoted keyword in FeatureDeclaration.
+    let specializes = server
+        .find_symbol_impl(SpecId::Kerml, "specializes")
+        .unwrap();
+    assert!(
+        specializes
+            .grammar
+            .iter()
+            .any(|h| h.production == "Specialization" && h.kind == "keyword"),
+        "Specialization should quote 'specializes': {:?}",
+        specializes.grammar
+    );
+    assert!(specializes.text.is_empty());
+
+    // Unknown identifier: success with empty tiers, not an error.
+    let unknown = server
+        .find_symbol_impl(SpecId::Kerml, "no_such_symbol_xyz")
+        .unwrap();
+    assert!(unknown.grammar.is_empty());
+    assert!(unknown.text.is_empty());
+
+    // Blank symbol is a parameter error.
+    assert!(server.find_symbol_impl(SpecId::Kerml, "  ").is_err());
+}
+
+#[test]
+fn find_symbol_on_real_kerml_finds_conjugate() {
+    let server = SpecServer::embedded(std::path::PathBuf::from("../../crates")).unwrap();
+    let result = server.find_symbol_impl(SpecId::Kerml, "conjugate").unwrap();
+
+    assert!(
+        result.grammar.iter().any(|h| h.production == "CONJUGATES"),
+        "the CONJUGATES production quotes 'conjugates' (a partial key match); got: {:?}",
+        result
+            .grammar
+            .iter()
+            .map(|h| &h.production)
+            .collect::<Vec<_>>()
+    );
+    // 'conjugate' is an exact quoted literal in the Conjugation production
+    // (and in RESERVED_KEYWORD); it must appear as a keyword hit.
+    assert!(
+        result
+            .grammar
+            .iter()
+            .any(|h| h.production == "Conjugation" && h.kind == "keyword"),
+        "Conjugation should quote 'conjugate': {:?}",
+        result.grammar
+    );
+
+    // The prose mentions conjugation concepts (42 occurrences verified in
+    // the KerML corpus).
+    assert!(
+        !result.text.is_empty(),
+        "KerML prose should mention conjugate"
+    );
+}
+
+#[test]
+fn find_symbol_on_real_sysml_finds_port_usage() {
+    let server = SpecServer::embedded(std::path::PathBuf::from("../../crates")).unwrap();
+    let result = server.find_symbol_impl(SpecId::Sysml, "PortUsage").unwrap();
+
+    // Exact production-name hit, plus supertype references in the port
+    // productions that inherit from PortUsage.
+    assert!(
+        result
+            .grammar
+            .iter()
+            .any(|h| h.production == "PortUsage" && h.kind == "definition"),
+        "PortUsage should define itself: {:?}",
+        result.grammar
+    );
+    assert!(
+        result
+            .grammar
+            .iter()
+            .any(|h| h.kind == "reference" && h.supertype.as_deref() == Some("PortUsage")),
+        "productions declared `: PortUsage` reference it: {:?}",
+        result.grammar
+    );
+    assert!(
+        !result.text.is_empty(),
+        "SysML prose mentions PortUsage (58 occurrences)"
+    );
+}

@@ -4,7 +4,7 @@
 - [x] P1 — Add word/regex modes and figure-caption tier to search
 - [x] P2 — Replace list_sections with nested spec_toc tool
 - [x] P3 — Add ancestor path to get_section result
-- [ ] P4 — Add find_symbol grammar and prose cross-reference tool
+- [x] P4 — Add find_symbol grammar and prose cross-reference tool
 - [ ] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
 - [ ] P6 — Return surrounding prose context from get_figure
 - [ ] P7 — Vendor MiniLM q8 model and add embedding engine with disk cache
