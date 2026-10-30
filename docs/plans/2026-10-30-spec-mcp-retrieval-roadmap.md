@@ -5,7 +5,7 @@
 - [x] P2 — Replace list_sections with nested spec_toc tool
 - [x] P3 — Add ancestor path to get_section result
 - [x] P4 — Add find_symbol grammar and prose cross-reference tool
-- [ ] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
+- [x] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
 - [ ] P6 — Return surrounding prose context from get_figure
 - [ ] P7 — Vendor MiniLM q8 model and add embedding engine with disk cache
 - [ ] P8 — Add semantic_search tool with eval gate against tf-idf
@@ -492,3 +492,4 @@ Every phase: gate command (fmt/clippy/test) + the phase's stdio smoke with its e
 
 - P3: `SpecIndex::ancestors` is derived from the dotted clause id (every existing proper numeric prefix, root-first), **not** from heading levels — in the OMG sources a child heading can sit at the same level as its parent (e.g. `8.2.1` is `###` like its parent `8.2`; 494/534 KerML clauses resolve to a different parent under the level-walk). Level-walk nesting would also have mis-nested the P2 outline.
 - P2: `spec_toc` nesting corrected to the same id-derived parent rule (deepest existing proper dotted prefix; clauses with no such prefix are roots) in the `Nest spec_toc by clause id hierarchy` commit, keeping the `TocNode`/`TocResult`/`TocQuery` wire shapes and the tool description unchanged.
+- P5: `df` is corpus-wide document frequency (clauses whose own text contains the unit, over all `N = clauses.len()`), matching the phase's test arithmetic (`df(alpha)=6`, `N=6`) and standard tf-idf; per-matching-clause df degenerates to a constant idf under the AND-token semantics. The flip test's A body is `alpha beta beta beta` (3 beta, 4 occurrences total) so raw occurrence-count ranking genuinely puts B (5) first while tf-idf puts A first.

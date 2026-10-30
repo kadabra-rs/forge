@@ -769,7 +769,7 @@ impl SpecServer {
 
     #[tool(
         name = "search_sections",
-        description = "Full-text search over the KerML or SysML v2 spec (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Optional mode: \"substring\" (default) matches case-insensitive substrings, all tokens required; \"word\" matches whole words; \"regex\" treats the query as one case-insensitive Rust regex. Clauses whose id or title matches come first, then figure-caption matches (matched=\"figure\", with figure_number), then body matches ranked by occurrence count with a snippet. Returns clause ids for get_section. Set spec to \"kerml\" or \"sysml\"."
+        description = "Full-text search over the KerML or SysML v2 spec (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Optional mode: \"substring\" (default) matches case-insensitive substrings, all tokens required; \"word\" matches whole words; \"regex\" treats the query as one case-insensitive Rust regex. Clauses whose id or title matches come first, then figure-caption matches (matched=\"figure\", with figure_number), then body matches ranked by tf-idf, each with a ±2-sentence snippet around the first match. Returns clause ids for get_section. Set spec to \"kerml\" or \"sysml\"."
     )]
     fn search_sections(
         &self,

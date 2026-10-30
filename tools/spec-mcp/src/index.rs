@@ -49,9 +49,6 @@ pub struct SearchHit<'a> {
 /// id/title matches are never dropped.
 const BODY_MATCH_LIMIT: usize = 20;
 
-/// Characters of context kept on each side of the first match in a snippet.
-const SNIPPET_RADIUS: usize = 100;
-
 static IMAGE_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[\]\((_page_[^)]+\.jpeg)\)").unwrap());
 
@@ -172,8 +169,9 @@ impl SpecIndex {
     /// Three-tier search; the first tier that matches a clause wins for it:
     /// clauses whose id or title matches (document order, no snippet), then
     /// figure captions (caption snippet plus `figure`), then clauses whose
-    /// own body text matches every query unit, ranked by total occurrence
-    /// count. Matching is ASCII case-insensitive; see `SearchMode`.
+    /// own body text matches every query unit, ranked by tf-idf (rare terms
+    /// weigh more) with a ±2-sentence snippet around the first match. Matching
+    /// is ASCII case-insensitive; see `SearchMode`.
     pub fn search(&self, query: &str, mode: SearchMode) -> Result<Vec<SearchHit<'_>>> {
         let matcher = Matcher::build(query, mode)?;
         let mut seen: HashSet<&str> = HashSet::new();
@@ -215,8 +213,26 @@ impl SpecIndex {
             figure_hits += 1;
         }
 
-        // (score, clause index, first match position, match length)
-        let mut body_matches: Vec<(usize, usize, usize, usize)> = Vec::new();
+        // Corpus-wide document frequency per query unit: how many clauses'
+        // own text contains the unit, independent of the query's AND
+        // semantics (which only decide which clauses appear in the results).
+        // This is what gives rare units their higher idf weight.
+        let mut df = vec![0usize; matcher.n_units()];
+        for lower in &self.own_texts_lower {
+            for (u, &c) in matcher.unit_counts(lower).iter().enumerate() {
+                if c > 0 {
+                    df[u] += 1;
+                }
+            }
+        }
+        let n = self.clauses.len() as f64;
+        let idf: Vec<f64> = df
+            .iter()
+            .map(|&d| ((1.0 + n) / (1.0 + d as f64)).ln() + 1.0)
+            .collect();
+
+        // (tf-idf score, clause index, first match position, match length)
+        let mut body_matches: Vec<(f64, usize, usize, usize)> = Vec::new();
         for (i, c) in self.clauses.iter().enumerate() {
             if seen.contains(c.id.as_str()) {
                 continue;
@@ -224,11 +240,15 @@ impl SpecIndex {
             let Some((counts, pos, len)) = matcher.match_text(&self.own_texts_lower[i]) else {
                 continue;
             };
-            let score: usize = counts.iter().sum();
+            let score: f64 = counts
+                .iter()
+                .enumerate()
+                .map(|(u, &cnt)| cnt as f64 * idf[u])
+                .sum();
             body_matches.push((score, i, pos, len));
         }
 
-        body_matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        body_matches.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         body_matches.truncate(BODY_MATCH_LIMIT);
         hits.extend(body_matches.into_iter().map(|(_, i, pos, len)| SearchHit {
             clause: &self.clauses[i],
@@ -238,32 +258,61 @@ impl SpecIndex {
         Ok(hits)
     }
 
-    pub(crate) fn snippet(&self, clause_idx: usize, pos: usize, len: usize) -> Option<String> {
-        let text = &self.own_texts[clause_idx];
-        if pos > text.len() {
+    pub(crate) fn snippet(&self, clause_idx: usize, pos: usize, _len: usize) -> Option<String> {
+        let text = self.own_texts.get(clause_idx)?;
+        let spans = sentence_spans(text);
+        if spans.is_empty() {
             return None;
         }
-
-        let mut start = pos.saturating_sub(SNIPPET_RADIUS);
-        while !text.is_char_boundary(start) {
-            start -= 1;
+        // Span containing the match start; fall back to the last span when the
+        // position lands outside every span (defensive).
+        let center = spans
+            .iter()
+            .position(|&(s, e)| pos >= s && pos < e)
+            .unwrap_or(spans.len() - 1);
+        // Up to two sentences on each side of the match, clamped to the range.
+        let lo = center.saturating_sub(2);
+        let hi = (center + 2).min(spans.len() - 1);
+        let mut window: Vec<usize> = (lo..=hi).collect();
+        let joined = |idxs: &[usize]| {
+            idxs.iter()
+                .map(|&j| text[spans[j].0..spans[j].1].to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut s = joined(&window);
+        // Over budget: shed spans from the ends, alternating last then first.
+        let mut drop_last = true;
+        while s.chars().count() > 600 && window.len() > 1 {
+            if drop_last {
+                window.pop();
+            } else {
+                window.remove(0);
+            }
+            drop_last = !drop_last;
+            s = joined(&window);
         }
-        let mut end = (pos + len + SNIPPET_RADIUS).min(text.len());
-        while !text.is_char_boundary(end) {
-            end += 1;
+        // Still over budget with one span left (a very long sentence): cut at
+        // a char boundary and mark the cut.
+        if s.chars().count() > 600 {
+            let mut cut: String = s.chars().take(600).collect();
+            cut.push('…');
+            s = cut;
         }
-
-        let mut s = text[start..end]
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if start > 0 {
-            s.insert(0, '…');
+        let first = spans[window[0]].0;
+        let last = spans[*window.last().unwrap()].1;
+        let mut out = String::new();
+        if first > 0 {
+            out.push('…');
         }
-        if end < text.len() {
-            s.push('…');
+        out.push_str(&s);
+        if last < text.len() {
+            out.push('…');
         }
-        Some(s)
+        Some(out)
     }
 }
 
@@ -352,6 +401,37 @@ impl Matcher {
         }
         Some(out)
     }
+
+    /// Number of query units (Substring: token count; Word: regex count;
+    /// Regex: one).
+    fn n_units(&self) -> usize {
+        match self {
+            Matcher::Substring { tokens, .. } => tokens.len(),
+            Matcher::Word { res } => res.len(),
+            Matcher::Regex { .. } => 1,
+        }
+    }
+
+    /// Per-unit occurrence count in `lower`, independent of the query's AND
+    /// semantics: an absent unit counts 0 where `match_text` would reject the
+    /// whole text. Drives document-frequency scoring.
+    fn unit_counts(&self, lower: &str) -> Vec<usize> {
+        let mut counts = Vec::new();
+        match self {
+            Matcher::Substring { tokens, .. } => {
+                for tok in tokens {
+                    counts.push(lower.matches(tok.as_str()).count());
+                }
+            }
+            Matcher::Word { res } => {
+                for re in res {
+                    counts.push(re.find_iter(lower).count());
+                }
+            }
+            Matcher::Regex { re } => counts.push(re.find_iter(lower).count()),
+        }
+        counts
+    }
 }
 
 /// `(first match position, match length, match count)` for one regex.
@@ -366,6 +446,39 @@ fn scan_re(re: &Regex, lower: &str) -> Option<(usize, usize, usize)> {
     }
     let (pos, len) = first?;
     Some((pos, len, count))
+}
+
+/// `(start, end)` byte spans of the sentences in `text`. A sentence ends at
+/// `.`, `!`, or `?` followed by ASCII whitespace, or at a terminal that sits at
+/// the end of the text; the spans tile the whole text, any trailing remainder
+/// (no terminal punctuation) being its own final span. A terminal followed by a
+/// digit does not split, so dotted clause ids like "7.3.2" stay intact.
+fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < len {
+        let is_terminal = matches!(bytes[i], b'.' | b'!' | b'?');
+        let at_end = i + 1 == len;
+        let followed = !at_end && (bytes[i + 1] as char).is_ascii_whitespace();
+        if is_terminal && (followed || at_end) {
+            spans.push((start, i + 1));
+            let mut j = i + 1;
+            while j < len && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            start = j;
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    if start < len {
+        spans.push((start, len));
+    }
+    spans
 }
 
 pub fn build_index(md: &str, bnf_src: &str) -> Result<SpecIndex> {

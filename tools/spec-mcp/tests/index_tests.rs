@@ -164,6 +164,47 @@ fn search_prefers_title_over_figure_caption() {
 }
 
 #[test]
+fn body_ranking_weights_rare_terms_by_tf_idf() {
+    // Doc order B then A; B has 4 alpha + 1 beta (5 words), A has 1 alpha + 3
+    // beta (4 words). Raw occurrence-count ranking would put B (5) first.
+    // Corpus-wide df (alpha=6, beta=2, N=6) gives idf(alpha)=1.0 and
+    // idf(beta)=ln(7/3)+1≈1.85, so A's beta weight lifts it above B.
+    let md = "## <span id=\"b\"></span>**7.1 B**\n\nalpha alpha alpha alpha beta\n\n\
+              ## <span id=\"a\"></span>**7.2 A**\n\nalpha beta beta beta\n\n\
+              ## <span id=\"c\"></span>**7.3 C**\n\nalpha gamma\n\n\
+              ## <span id=\"d\"></span>**7.4 D**\n\nalpha gamma\n\n\
+              ## <span id=\"e\"></span>**7.5 E**\n\nalpha gamma\n\n\
+              ## <span id=\"f\"></span>**7.6 F**\n\nalpha gamma\n";
+    let idx = build_index(md, "").unwrap();
+    assert_eq!(idx.list_clauses().len(), 6, "N is the clause count");
+    let hits = idx.search("alpha beta", SearchMode::default()).unwrap();
+    let pos = |id: &str| hits.iter().position(|h| h.clause.id == id);
+    assert!(
+        pos("7.2").unwrap() < pos("7.1").unwrap(),
+        "tf-idf ranks the rare-token clause first: {:?}",
+        hits.iter().map(|h| &h.clause.id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn snippet_is_a_two_sentence_window() {
+    // Seven one-sentence paragraphs; the match is in S4. The ±2-sentence
+    // window is S2..S6, with ellipses marking S1 and S7 outside it.
+    let md = "## <span id=\"a\"></span>**7.1 Window**\n\n\
+              S1 one. S2 two. S3 three. S4 four. S5 five. S6 six. S7 seven.\n";
+    let idx = build_index(md, "").unwrap();
+    let hits = idx.search("four", SearchMode::default()).unwrap();
+    assert_eq!(hits.len(), 1);
+    let s = hits[0].snippet.as_deref().unwrap();
+    assert!(s.contains("S2 two"), "{s}");
+    assert!(s.contains("S6 six"), "{s}");
+    assert!(!s.contains("S1 one"), "S1 is outside the window: {s}");
+    assert!(!s.contains("S7 seven"), "S7 is outside the window: {s}");
+    assert!(s.starts_with('…'), "text precedes the window: {s}");
+    assert!(s.ends_with('…'), "text follows the window: {s}");
+}
+
+#[test]
 fn search_real_spec_finds_body_only_terms() {
     let md = std::fs::read_to_string(
         "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",
