@@ -9,7 +9,10 @@ use crate::clause_tree::{ClauseNode, extract_clause_tree};
 
 #[derive(Clone, Debug)]
 pub struct FigureRef {
-    pub number: u32,
+    /// Printed figure number ("Figure N.") when the image has a caption;
+    /// `None` for diagrams the Markdown embeds without a caption line.
+    pub number: Option<u32>,
+    /// Caption text; empty when the image is uncaptioned.
     pub title: String,
     pub image_path: String,
     pub clause_id: String,
@@ -30,9 +33,13 @@ const BODY_MATCH_LIMIT: usize = 20;
 /// Characters of context kept on each side of the first match in a snippet.
 const SNIPPET_RADIUS: usize = 100;
 
-static FIGURE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"!\[\]\((_page_[^)]+\.jpeg)\)\s*\n\s*\*\*Figure (\d+)\.\s*(.+?)\*\*").unwrap()
-});
+static IMAGE_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!\[\]\((_page_[^)]+\.jpeg)\)").unwrap());
+
+/// A caption immediately following an image link, e.g. `**Figure 3. Title**`.
+/// Anchored so it only matches the text right after the link.
+static FIGURE_CAPTION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A\s*\n\s*\*\*Figure (\d+)\.\s*(.+?)\*\*").unwrap());
 
 static SPAN_ANCHOR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<span id="([^"]+)"></span>"#).unwrap());
@@ -210,12 +217,17 @@ fn extract_figures(
     clauses: &[ClauseNode],
 ) -> (Vec<FigureRef>, HashMap<String, Vec<usize>>) {
     let mut figures = Vec::new();
-    for caps in FIGURE_RE.captures_iter(md) {
+    for caps in IMAGE_LINK_RE.captures_iter(md) {
+        let whole = caps.get(0).unwrap();
         let image_path = caps.get(1).unwrap().as_str().to_string();
-        let number: u32 = caps.get(2).unwrap().as_str().parse().unwrap_or(0);
-        let title = caps.get(3).unwrap().as_str().trim().to_string();
-        let match_start = caps.get(0).unwrap().start();
-        let clause_id = find_clause_for_byte(clauses, match_start);
+        let (number, title) = match FIGURE_CAPTION_RE.captures(&md[whole.end()..]) {
+            Some(caption) => (
+                Some(caption[1].parse().unwrap_or(0)),
+                caption[2].trim().to_string(),
+            ),
+            None => (None, String::new()),
+        };
+        let clause_id = find_clause_for_byte(clauses, whole.start());
         figures.push(FigureRef {
             number,
             title,

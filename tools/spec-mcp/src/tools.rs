@@ -17,6 +17,10 @@ use crate::index::{SpecIndex, build_index};
 /// get_section response. All figures are still listed in the JSON metadata.
 const INLINE_FIGURE_LIMIT: usize = 6;
 
+/// `list_examples` caps its output so the result stays readable; the corpora
+/// are far smaller than this today.
+const MAX_EXAMPLE_LISTING: usize = 600;
+
 pub struct SpecServer {
     specs: HashMap<SpecId, SpecIndex>,
     crates_dir: PathBuf,
@@ -184,12 +188,41 @@ impl SpecServer {
         }
     }
 
+    /// Embedded worked-example model sources, sorted by path (so entries group by
+    /// top-level directory) and capped at [`MAX_EXAMPLE_LISTING`].
+    pub fn list_examples_impl(&self, spec: SpecId) -> Vec<ExampleSummary> {
+        assets::example_paths(spec)
+            .into_iter()
+            .take(MAX_EXAMPLE_LISTING)
+            .map(|path| {
+                let bytes = assets::example_source(spec, &path).map_or(0, |s| s.len());
+                ExampleSummary { path, bytes }
+            })
+            .collect()
+    }
+
+    /// Full source of one embedded example model, or `None` when the relative
+    /// path is unknown or unsafe.
+    pub fn get_example_impl(&self, spec: SpecId, path: &str) -> Option<ExampleResult> {
+        let bytes = assets::example_source(spec, path)?;
+        Some(ExampleResult {
+            path: path.to_string(),
+            source: String::from_utf8_lossy(bytes.as_ref()).into_owned(),
+        })
+    }
+
     pub fn get_figure_impl(&self, spec: SpecId, figure_number: u32) -> Option<FigureResult> {
         let index = self.index(spec)?;
-        let fig = index.figures().iter().find(|f| f.number == figure_number)?;
+        // Uncaptioned diagrams have no printed number; the first figure in
+        // document order carrying this number wins (spec numbering restarts
+        // per part, so duplicates would still resolve deterministically).
+        let fig = index
+            .figures()
+            .iter()
+            .find(|f| f.number == Some(figure_number))?;
         Some(FigureResult {
             spec: spec.label().to_string(),
-            number: fig.number,
+            number: figure_number,
             title: fig.title.clone(),
             image_file: fig.image_path.clone(),
             clause_id: fig.clause_id.clone(),
@@ -283,7 +316,11 @@ pub struct ClauseListResult {
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FigureSummary {
-    pub number: u32,
+    /// Printed figure number ("Figure N."), or `null` for diagrams the spec
+    /// embeds without a caption. Uncaptioned figures are still listed (and
+    /// their images inlined) but cannot be fetched with `get_figure`.
+    pub number: Option<u32>,
+    /// Caption text; empty for uncaptioned diagrams.
     pub title: String,
     /// File name the spec Markdown links relatively, e.g. "_page_131_Figure_3.jpeg".
     pub image_file: String,
@@ -367,6 +404,47 @@ pub struct ImplResult {
     pub entry_points: Vec<String>,
 }
 
+/// One embedded worked-example model file.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExampleSummary {
+    /// Path relative to the corpus root, e.g.
+    /// "training/32. Requirements/Requirement Definitions.sysml".
+    pub path: String,
+    /// Source size in bytes.
+    pub bytes: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExampleListQuery {
+    /// Which corpus to list: "kerml" (58 `.kerml` examples) or "sysml"
+    /// (examples/, training/, validation/ `.sysml` models).
+    pub spec: SpecId,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExampleListResult {
+    pub spec: String,
+    pub count: usize,
+    /// Sorted by path, so entries group by top-level directory.
+    pub examples: Vec<ExampleSummary>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExampleQuery {
+    /// Which corpus to read: "kerml" or "sysml".
+    pub spec: SpecId,
+    /// Path exactly as returned by list_examples, e.g.
+    /// "training/32. Requirements/Requirement Definitions.sysml".
+    pub path: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExampleResult {
+    pub path: String,
+    /// Full model source text.
+    pub source: String,
+}
+
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FigureQuery {
     /// Which spec the figure belongs to: "kerml" or "sysml".
@@ -447,6 +525,41 @@ impl SpecServer {
     }
 
     #[tool(
+        name = "list_examples",
+        description = "List the OMG worked-example model corpus embedded in this server: complete `.kerml`/`.sysml` model sources shipped with the KerML 1.0 / SysML v2 release (examples/, training/, validation/). Returns each file's path and byte size, sorted by path. Read one with get_example. Use these to copy real modeling idioms instead of inventing syntax."
+    )]
+    fn list_examples(
+        &self,
+        Parameters(ExampleListQuery { spec }): Parameters<ExampleListQuery>,
+    ) -> Json<ExampleListResult> {
+        let examples = self.list_examples_impl(spec);
+        Json(ExampleListResult {
+            spec: spec.label().to_string(),
+            count: examples.len(),
+            examples,
+        })
+    }
+
+    #[tool(
+        name = "get_example",
+        description = "Read one worked-example model source from the OMG corpus by its exact path as listed by list_examples (paths may contain spaces, e.g. \"training/32. Requirements/Requirement Definitions.sysml\"). Returns the full `.kerml`/`.sysml` text. Use list_examples first to discover paths."
+    )]
+    fn get_example(
+        &self,
+        Parameters(ExampleQuery { spec, path }): Parameters<ExampleQuery>,
+    ) -> Result<Json<ExampleResult>, ErrorData> {
+        self.get_example_impl(spec, &path).map(Json).ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!(
+                    "example '{path}' not found in the {} corpus; try list_examples",
+                    spec.label()
+                ),
+                None,
+            )
+        })
+    }
+
+    #[tool(
         name = "search_sections",
         description = "Full-text search over the KerML or SysML v2 spec, case-insensitive (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Clauses whose id or title contains the query are listed first; then clauses whose body contains every query token, ranked by occurrence count, each with a snippet around the first match. Returns clause ids to feed into get_section. Set spec to \"kerml\" or \"sysml\"."
     )]
@@ -487,7 +600,7 @@ impl SpecServer {
 
     #[tool(
         name = "get_figure",
-        description = "Fetch a diagram from the KerML or SysML v2 spec by its printed figure number (e.g. 1 for \"Figure 1.\"). Returns the figure's title and owning clause, with the image attached inline so it can be viewed directly. Use get_section's `figures` list to discover figure numbers."
+        description = "Fetch a diagram from the KerML or SysML v2 spec by its printed figure number (e.g. 1 for \"Figure 1.\"). Returns the figure's title and owning clause, with the image attached inline so it can be viewed directly. Use get_section's `figures` list to discover figure numbers; entries whose number is null are uncaptioned diagrams, viewable inline via get_section."
     )]
     fn get_figure(
         &self,
@@ -547,7 +660,10 @@ impl rmcp::ServerHandler for SpecServer {
              systems-modeling layer built on KerML). Typical flow: search_sections to \
              locate a clause, get_section to read it (figures arrive inline as images), \
              get_syntax for grammar productions, follow_link to chase cross-references, \
-             find_implementation to map a clause to kermlc compiler code.",
+             find_implementation to map a clause to kermlc compiler code. The complete \
+             OMG worked-example model corpus (`.kerml` and `.sysml` sources) is embedded \
+             too: list_examples lists it, get_example returns any model's full text, so \
+             real modeling idioms can be copied instead of inventing syntax.",
         )
     }
 }

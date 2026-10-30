@@ -42,6 +42,19 @@ struct KermlFigures;
 #[include = "*.jpeg"]
 struct SysmlFigures;
 
+/// Worked-example models from the OMG release: the KerML examples tree.
+#[derive(RustEmbed)]
+#[folder = "../../vendor/SysML-v2-Release/kerml/src/examples"]
+#[include = "**/*.kerml"]
+struct KermlExamples;
+
+/// Worked-example models from the OMG release: the SysML v2 examples,
+/// training, and validation trees.
+#[derive(RustEmbed)]
+#[folder = "../../vendor/SysML-v2-Release/sysml/src"]
+#[include = "**/*.sysml"]
+struct SysmlExamples;
+
 /// Full Markdown conversion of the spec PDF (see docs/spec/README.md).
 pub fn spec_md(spec: SpecId) -> &'static str {
     match spec {
@@ -73,4 +86,39 @@ pub fn figure_bytes(spec: SpecId, file_name: &str) -> Option<Cow<'static, [u8]>>
         SpecId::Kerml => KermlFigures::get(file_name).map(|f| f.data),
         SpecId::Sysml => SysmlFigures::get(file_name).map(|f| f.data),
     }
+}
+
+/// Relative paths of every embedded worked-example model for the spec,
+/// sorted so they group by top-level directory (`examples/`, `training/`,
+/// `validation/`). KerML paths are relative to
+/// `kerml/src/examples/`, SysML paths to `sysml/src/`.
+pub fn example_paths(spec: SpecId) -> Vec<String> {
+    let mut paths: Vec<String> = match spec {
+        SpecId::Kerml => KermlExamples::iter().map(|f| f.into_owned()).collect(),
+        SpecId::Sysml => SysmlExamples::iter().map(|f| f.into_owned()).collect(),
+    };
+    paths.sort();
+    paths
+}
+
+/// Raw UTF-8 bytes of one embedded example model, by its exact relative path
+/// as returned from [`example_paths`]. Paths that are absolute, contain a
+/// backslash, or contain empty/`.`/`..` segments are rejected.
+pub fn example_source(spec: SpecId, rel_path: &str) -> Option<Cow<'static, [u8]>> {
+    if !is_safe_rel_path(rel_path) {
+        return None;
+    }
+    match spec {
+        SpecId::Kerml => KermlExamples::get(rel_path).map(|f| f.data),
+        SpecId::Sysml => SysmlExamples::get(rel_path).map(|f| f.data),
+    }
+}
+
+fn is_safe_rel_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
