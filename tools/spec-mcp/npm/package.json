@@ -19,7 +19,7 @@
   },
   "files": [
     "bin/spec-mcp.mjs",
-    "skill/SKILL.md",
+    "skill",
     "README.md"
   ],
   "scripts": {

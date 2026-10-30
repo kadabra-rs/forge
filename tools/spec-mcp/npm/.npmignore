@@ -1,0 +1,8 @@
+# Presence of this file makes npm pack/publish use ONLY the package.json
+# `files` whitelist — the neighboring .gitignore (which ignores the
+# prepare-generated `skill/`) is not consulted for packing.
+# The real risk this guards is `prepare` never running (e.g. npm config
+# ignore-scripts=true): then skill/ is absent and the tarball loses the
+# bundled skill. The release workflow stages the skill explicitly and
+# asserts `skill/SKILL.md` is in the packed tarball before npm publish, so
+# publishing does not depend on lifecycle scripts at all.

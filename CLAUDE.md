@@ -127,8 +127,10 @@ IMPORTANT:
   release (+`SHA256SUMS.txt`) and the npm launcher `@kadabra-rs/spec-mcp`
   (`npx -y @kadabra-rs/spec-mcp` downloads, checksum-verifies, caches the binary).
 - **`tools/install-sysml-tooling.sh`** — installs latest `spec42` (the SysML v2 /
-  KerML validator CLI) and `sysand` (constraint solver) into `~/.local/bin`,
-  checksum-verified. Validation of `.sysml`/`.kerml` files goes through
+  KerML validator CLI, verified against the release `SHA256SUMS.txt`) and `sysand`
+  (the SysML v2/KerML package manager; no upstream checksums, HTTPS download only)
+  into `~/.local/bin`.
+  Validation of `.sysml`/`.kerml` files goes through
   `spec42 check --format json` → `spec42 explain-diagnostic` → `spec42 model-export`
   (spec42 upstream removed its own MCP server in v0.50.0; the CLI is the surface).
 - **`.omp/skills/sysml-modeling/SKILL.md`** — canonical agent skill tying the two

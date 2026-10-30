@@ -17,15 +17,22 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g. 0.2.0), must match tools/spec-mcp/npm/package.json"
+        description: "Version to release (e.g. 0.2.0), must match tools/spec-mcp/Cargo.toml and npm/package.json"
         required: true
       skip_npm:
         description: "Skip the npm publish job"
+        type: boolean
+
+      allow_overwrite:
+        description: "Overwrite an existing GitHub release's assets (dispatch only)"
         type: boolean
         default: false
 
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
 
 jobs:
   resolve-version:
@@ -35,15 +42,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: v
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            V="${{ inputs.version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            V="$INPUT_VERSION"
           else
             V="${GITHUB_REF_NAME#spec-mcp-v}"
           fi
           PKG_V=$(node -p "require('./tools/spec-mcp/npm/package.json').version")
-          if [ "$V" != "$PKG_V" ]; then
-            echo "error: tag version '$V' != npm package.json version '$PKG_V'" >&2
+          CARGO_V=$(sed -n 's/^version = "\(.*\)"$/\1/p' tools/spec-mcp/Cargo.toml | head -n1)
+          if [ "$V" != "$PKG_V" ] || [ "$V" != "$CARGO_V" ]; then
+            echo "error: tag version '$V' != npm package.json '$PKG_V' / Cargo.toml '$CARGO_V'" >&2
             exit 1
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
@@ -63,12 +74,17 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             name: darwin-arm64
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             name: darwin-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The Rust embeds (bnf/*.kebnf, kerml+sysml example folders) live
+          # in this submodule; the plain checkouts in the other jobs stay
+          # shallow of vendor/ on purpose.
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -78,13 +94,13 @@ jobs:
       - name: Build
         working-directory: tools/spec-mcp
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Test (native targets only)
+      - name: Test
         working-directory: tools/spec-mcp
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' }}
         run: cargo test --target ${{ matrix.target }}
       - name: Package
+        env:
+          V: ${{ needs.resolve-version.outputs.version }}
         run: |
-          V="${{ needs.resolve-version.outputs.version }}"
           BIN="tools/spec-mcp/target/${{ matrix.target }}/release/spec-mcp"
           tar -czf "spec-mcp-$V-${{ matrix.name }}.tar.gz" -C "$(dirname "$BIN")" spec-mcp
           shasum -a 256 "spec-mcp-$V-${{ matrix.name }}.tar.gz" > "spec-mcp-$V-${{ matrix.name }}.tar.gz.sha256"
@@ -117,12 +133,28 @@ jobs:
               lines.append(f"{sha}  {name}")
           open("SHA256SUMS.txt", "w").write("\n".join(lines) + "\n")
           EOF
-          rm -f *.sha256
+          rm -f ./*.sha256
           cat SHA256SUMS.txt
+      - name: Refuse to overwrite a published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.resolve-version.outputs.version }}
+          ALLOW_OVERWRITE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_overwrite }}
+        run: |
+          if gh release view "spec-mcp-v$V" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$ALLOW_OVERWRITE" != "true" ]; then
+              echo "error: release spec-mcp-v$V already exists; refusing to overwrite published assets" >&2
+              echo "delete the release and tag first, or re-run via workflow_dispatch with allow_overwrite=true" >&2
+              exit 1
+            fi
+            echo "warning: overwriting release spec-mcp-v$V (allow_overwrite=true)"
+          fi
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: spec-mcp-v${{ needs.resolve-version.outputs.version }}
           name: spec-mcp v${{ needs.resolve-version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          overwrite_files: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_overwrite }}
           body: |
             Self-contained MCP server for the OMG KerML 1.0 and SysML v2 specifications.
 
@@ -141,9 +173,23 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      - name: Stage bundled skill
+        working-directory: tools/spec-mcp/npm
+        run: node scripts/copy-skill.mjs
       - name: Test launcher
         working-directory: tools/spec-mcp/npm
         run: node --test
+      - name: Assert bundled skill is in the release tarball
+        working-directory: tools/spec-mcp/npm
+        run: |
+          # Gate on the actual artifact, independent of npm's lifecycle
+          # script settings (ignore-scripts would otherwise let npm
+          # pack/publish ship a tarball without skill/ and the launcher
+          # hard-fails on `skill install`).
+          mkdir -p /tmp/spec-mcp-pkg
+          npm_config_ignore_scripts=false npm pack --pack-destination /tmp/spec-mcp-pkg
+          tar -tzf /tmp/spec-mcp-pkg/*.tgz | grep -F "package/skill/SKILL.md" \
+            || { echo "skill/SKILL.md missing from the packed tarball" >&2; exit 1; }
       - name: Publish
         working-directory: tools/spec-mcp/npm
         env:

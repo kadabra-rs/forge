@@ -96,12 +96,12 @@ See [`tools/spec-mcp/README.md`](tools/spec-mcp/README.md). Releases are tag-dri
 ### External SysML tooling
 
 Agent workflows validate models with [spec42](https://github.com/elan8/spec42)
-(parser/validator CLI; `spec42 check --format json` is the pass/fail gate) and
-[sysand](https://sysand.com) (constraint solver). Install the latest releases of both
-into `~/.local/bin` with:
+(parser/validator CLI; `spec42 check --format json` is the pass/fail gate).
+[sysand](https://sysand.com), the SysML v2/KerML package manager, is installed
+alongside it. Install the latest releases of both into `~/.local/bin` with:
 
 ```bash
-sh tools/install-sysml-tooling.sh          # latest spec42 + sysand, checksum-verified
+sh tools/install-sysml-tooling.sh          # spec42 (SHA256SUMS-verified) + sysand (HTTPS only; no published checksums)
 SPEC42_VERSION=0.57.0 FORCE=1 sh tools/install-sysml-tooling.sh   # pin + reinstall
 ```
 

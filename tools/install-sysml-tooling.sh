@@ -1,8 +1,8 @@
 #!/bin/sh
 # Installs the external SysML v2 tooling used by the forge agent workflow into
 # $HOME/.local/bin: spec42 (parser/validator CLI; replaces the removed
-# spec42-mcp server, which upstream retired in v0.50.0) and sysand (constraint
-# solver). Both are fetched at their latest release; the script never touches
+# spec42-mcp server, which upstream retired in v0.50.0) and sysand (the SysML v2/KerML
+# package manager). Both are fetched at their latest release; the script never touches
 # shell profiles.
 #
 # Configuration via environment variables:
@@ -22,7 +22,7 @@
 
 set -eu
 
-INSTALL_DIR="${HOME}/.local/bin"
+INSTALL_DIR="${HOME:-}/.local/bin"
 TMP_DIR=""
 STAGING=""
 
@@ -125,8 +125,9 @@ atomic_install() {
 }
 
 installed_has_version() {
-  [ -x "${INSTALL_DIR}/$1" ] &&
-    "${INSTALL_DIR}/$1" --version 2>/dev/null | grep -qiF "$2"
+  [ -x "${INSTALL_DIR}/$1" ] || return 1
+  v="$("${INSTALL_DIR}/$1" --version 2>/dev/null)" || return 1
+  [ "${v##* }" = "$2" ]
 }
 
 install_spec42() {
@@ -143,7 +144,7 @@ install_spec42() {
     linux:x86_64) target="linux-x64" ;;
     macos:arm64)  target="darwin-arm64" ;;
     macos:x86_64) target="darwin-x64" ;;
-    *) fail "no spec42 release asset for ${os}/${arch}" ;;
+    *) say "warning: spec42 publishes no ${os}/${arch} build; skipping spec42"; return 0 ;;
   esac
   asset="spec42-${ver}-${target}.tar.gz"
   base="https://github.com/elan8/spec42/releases/download/${tag}"
@@ -168,7 +169,9 @@ install_spec42() {
   [ -f "${TMP_DIR}/spec42-x/spec42" ] ||
     fail "spec42 binary not found at the archive root"
   atomic_install "${TMP_DIR}/spec42-x/spec42" spec42
-  say "installed $("${INSTALL_DIR}/spec42" --version)"
+  v="$("${INSTALL_DIR}/spec42" --version)" ||
+    fail "installed spec42 does not run on this system"
+  say "installed $v"
 }
 
 install_sysand() {
@@ -199,7 +202,9 @@ install_sysand() {
   [ -f "${TMP_DIR}/sysand-x/sysand" ] ||
     fail "sysand binary not found at the archive root"
   atomic_install "${TMP_DIR}/sysand-x/sysand" sysand
-  say "installed $("${INSTALL_DIR}/sysand" --version)"
+  v="$("${INSTALL_DIR}/sysand" --version)" ||
+    fail "installed sysand does not run on this system"
+  say "installed $v"
 }
 
 main() {

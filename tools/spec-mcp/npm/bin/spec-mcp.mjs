@@ -20,9 +20,10 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync,
+  realpathSync, renameSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -42,6 +43,10 @@ export function detectPlatform() {
     fail(`no prebuilt spec-mcp binary for ${process.platform}/${process.arch}; \
 build it (cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) \
 and set SPEC_MCP_BINARY, or run: cargo install --git https://github.com/${GITHUB_REPO} --bin spec-mcp`);
+  }
+  if (os === "linux" && !process.report?.getReport?.().header?.glibcVersionRuntime) {
+    fail(`no prebuilt spec-mcp binary for linux/${arch}; build it \
+(cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) and set SPEC_MCP_BINARY`);
   }
   return `${os}-${arch}`;
 }
@@ -154,8 +159,15 @@ export async function ensureBinary({ quiet = false } = {}) {
 
   const data = untarOne(archive, "spec-mcp");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(bin, data);
-  chmodSync(bin, 0o755);
+  const tmp = `${bin}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, data);
+    chmodSync(tmp, 0o755);
+    renameSync(tmp, bin);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
   if (!quiet) err(`spec-mcp: cached at ${bin}`);
   return bin;
 }
@@ -181,7 +193,7 @@ export function skillTargets(scope, agents) {
   };
   const list = agents.includes("all")
     ? ["omp", "claude", "codex", "agents"] : agents;
-  for (const a of list) if (!roots[a]) fail(`unknown agent '${a}' (omp|claude|codex|agents|all)`);
+  for (const a of list) if (!Object.hasOwn(roots, a)) fail(`unknown agent '${a}' (omp|claude|codex|agents|all)`);
   return list.map((a) => ({ agent: a, dir: join(roots[a], SKILL_NAME) }));
 }
 
@@ -294,6 +306,16 @@ async function main() {
       const args = process.env.SPEC_MCP_CRATES_DIR ? [process.env.SPEC_MCP_CRATES_DIR] : [];
       const child = spawn(bin, args, { stdio: "inherit" });
       child.on("error", (e) => fail(`failed to exec ${bin}: ${e.message}`));
+      for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+        process.on(sig, () => {
+          if (child.exitCode === null && child.signalCode === null) child.kill(sig);
+          else {
+            // Re-raised from the exit handler below: restore default and die.
+            process.removeAllListeners(sig);
+            process.kill(process.pid, sig);
+          }
+        });
+      }
       child.on("exit", (code, signal) => {
         if (signal) process.kill(process.pid, signal);
         else process.exit(code ?? 1);
@@ -306,6 +328,8 @@ async function main() {
 }
 
 // Run only when executed as a program; importers (tests) get the functions.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// npm exposes bins through symlinks while Node realpath-resolves the main
+// module, so compare realpaths rather than the URL of the invoked path.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await main();
 }

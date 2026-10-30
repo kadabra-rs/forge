@@ -40,7 +40,7 @@ The KerML spec holds the kernel semantics (clause 7.x), textual + abstract synta
 ## spec42 CLI contract
 
 ```bash
-command -v spec42 || echo "spec42 missing: install with sh tools/install-sysml-tooling.sh (or curl -fsSL https://raw.githubusercontent.com/elan8/spec42/main/install.sh | sh)"
+command -v spec42 || echo "spec42 missing: in the forge repo run: sh tools/install-sysml-tooling.sh; elsewhere download a platform archive from https://github.com/elan8/spec42/releases and verify it against that release's SHA256SUMS.txt"
 
 spec42 doctor --format json                                   # environment/stdlib first on suspect setups
 spec42 check <path-or-dir> --format json                      # validation report

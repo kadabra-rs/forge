@@ -36,10 +36,11 @@ const SNIPPET_RADIUS: usize = 100;
 static IMAGE_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[\]\((_page_[^)]+\.jpeg)\)").unwrap());
 
-/// A caption immediately following an image link, e.g. `**Figure 3. Title**`.
+/// A caption immediately following an image link, e.g. `**Figure 3. Title**`
+/// or the heading form `# **Figure 63. Title**` the SysML conversion emits.
 /// Anchored so it only matches the text right after the link.
 static FIGURE_CAPTION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\A\s*\n\s*\*\*Figure (\d+)\.\s*(.+?)\*\*").unwrap());
+    LazyLock::new(|| Regex::new(r"\A\s*\n\s*(?:#+\s*)?\*\*Figure (\d+)\.\s*(.+?)\*\*").unwrap());
 
 static SPAN_ANCHOR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<span id="([^"]+)"></span>"#).unwrap());
