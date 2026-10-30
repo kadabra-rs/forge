@@ -266,6 +266,54 @@ fn extracts_figures_from_real_spec() {
 }
 
 #[test]
+fn figure_links_carry_byte_offsets() {
+    let md = "## <span id=\"p1\"></span>**8.3.1 Diagrams**\n\nProse. \
+              ![](_page_1_Figure_1.jpeg)\n\n**Figure 1. Widget diagram**\n";
+    let idx = build_index(md, "").unwrap();
+    let fig = &idx.figures()[0];
+    assert_eq!(
+        &md[fig.link_start..fig.link_end],
+        "![](_page_1_Figure_1.jpeg)"
+    );
+    assert_eq!(fig.clause_id, "8.3.1");
+    let pos = idx
+        .list_clauses()
+        .iter()
+        .position(|c| c.id == "8.3.1")
+        .unwrap();
+    assert_eq!(idx.clause_index("8.3.1"), Some(pos));
+    assert_eq!(idx.clause_index("nope"), None);
+}
+
+#[test]
+fn real_spec_figure_links_lie_in_their_owning_clause() {
+    for path in [
+        "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",
+        "../../docs/spec/2a-OMG_Systems_Modeling_Language/2a-OMG_Systems_Modeling_Language.md",
+    ] {
+        let md = std::fs::read_to_string(path).unwrap();
+        let idx = build_index(&md, "").unwrap();
+        for fig in idx.figures() {
+            assert!(
+                md[fig.link_start..fig.link_end].starts_with("![](_page_"),
+                "link offsets must span the image link in {path}"
+            );
+            // Front-matter images sit outside every clause.
+            if fig.clause_id.is_empty() {
+                continue;
+            }
+            let clause = idx.clause(&fig.clause_id).unwrap();
+            assert!(
+                clause.body_start <= fig.link_start && fig.link_end <= clause.own_end,
+                "figure {:?} not inside the own text of clause {} in {path}",
+                fig.number,
+                fig.clause_id
+            );
+        }
+    }
+}
+
+#[test]
 fn indexes_every_embedded_image_link() {
     use spec_mcp::assets::{SpecId, spec_md};
     for spec in [SpecId::Kerml, SpecId::Sysml] {

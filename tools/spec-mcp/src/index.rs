@@ -33,6 +33,10 @@ pub struct FigureRef {
     pub title: String,
     pub image_path: String,
     pub clause_id: String,
+    /// Byte offsets of the `![](...)` image link in the source markdown, used
+    /// to locate the figure's surrounding prose.
+    pub link_start: usize,
+    pub link_end: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +90,12 @@ impl SpecIndex {
 
     pub fn clause(&self, id: &str) -> Option<&ClauseNode> {
         self.by_id.get(id).map(|&i| &self.clauses[i])
+    }
+
+    /// Arena index of a clause, as needed by `snippet` (which works on the
+    /// per-clause own-text table).
+    pub fn clause_index(&self, id: &str) -> Option<usize> {
+        self.by_id.get(id).copied()
     }
 
     /// Ancestor chain root-first (chapter → … → parent), exclusive of the
@@ -548,6 +558,8 @@ fn extract_figures(
             title,
             image_path,
             clause_id,
+            link_start: whole.start(),
+            link_end: whole.end(),
         });
     }
 
@@ -559,15 +571,25 @@ fn extract_figures(
     (figures, by_clause)
 }
 
+/// Clause whose text contains `byte`: the innermost enclosing clause, i.e.
+/// the containing clause with the largest `body_start` (every containing
+/// clause starts at or before the byte, so the latest start is the deepest).
+/// Id length is not a depth measure: an ancestor whose `body_end` overshoots
+/// into following chapters encloses later clauses yet has a longer id.
 fn find_clause_for_byte(clauses: &[ClauseNode], byte: usize) -> String {
-    let mut best = String::new();
+    let mut best: Option<&ClauseNode> = None;
     for c in clauses {
-        if c.body_start <= byte && byte < c.body_end && (best.is_empty() || c.id.len() > best.len())
-        {
-            best = c.id.clone();
+        if c.body_start <= byte && byte < c.body_end {
+            let better = match best {
+                None => true,
+                Some(b) => (c.body_start, c.id.len()) > (b.body_start, b.id.len()),
+            };
+            if better {
+                best = Some(c);
+            }
         }
     }
-    best
+    best.map(|c| c.id.clone()).unwrap_or_default()
 }
 
 fn build_anchor_map(md: &str, clauses: &[ClauseNode]) -> HashMap<String, String> {

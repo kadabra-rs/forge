@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::assets::{self, SpecId};
 use crate::clause_tree::ClauseNode;
 use crate::implementation::find_implementation;
-use crate::index::{SearchMode, SpecIndex, build_index};
+use crate::index::{FigureRef, SearchMode, SpecIndex, build_index};
 use crate::symbols::SymbolKind;
 
 /// Sections can reference many figures; inline at most this many images per
@@ -331,6 +331,7 @@ impl SpecServer {
             title: fig.title.clone(),
             image_file: fig.image_path.clone(),
             clause_id: fig.clause_id.clone(),
+            context_md: figure_context(index, fig),
         })
     }
 
@@ -419,6 +420,21 @@ fn image_content(spec: SpecId, image_file: &str) -> Option<Content> {
     let bytes = assets::figure_bytes(spec, image_file)?;
     let data = base64::engine::general_purpose::STANDARD.encode(bytes.as_ref());
     Some(Content::image(data, "image/jpeg"))
+}
+
+/// Prose window around a figure's image link within its owning clause: the
+/// sentence holding the link plus up to two sentences on each side. The
+/// caption line directly follows the link in the markdown, so it lands inside
+/// the window. The owning clause is the deepest clause containing the link
+/// byte, so the link is normally inside its own text; the bounds guard keeps a
+/// pathological or synthetic corpus from slicing out of range.
+fn figure_context(index: &SpecIndex, fig: &FigureRef) -> Option<String> {
+    let clause = index.clause(&fig.clause_id)?;
+    let clause_idx = index.clause_index(&fig.clause_id)?;
+    if fig.link_start < clause.body_start || fig.link_end > clause.own_end {
+        return None;
+    }
+    index.snippet(clause_idx, fig.link_start - clause.body_start)
 }
 
 /// Wire-level name of a [`SymbolKind`] (`"definition" | "reference" |
@@ -667,6 +683,10 @@ pub struct FigureResult {
     pub title: String,
     pub image_file: String,
     pub clause_id: String,
+    /// Prose surrounding the embedded image in its clause (±2 sentences),
+    /// including the caption line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_md: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -820,7 +840,7 @@ impl SpecServer {
 
     #[tool(
         name = "get_figure",
-        description = "Fetch a diagram from the KerML or SysML v2 spec by its printed figure number (e.g. 1 for \"Figure 1.\"). Returns the figure's title and owning clause, with the image attached inline so it can be viewed directly. Use get_section's `figures` list to discover figure numbers; entries whose number is null are uncaptioned diagrams, viewable inline via get_section."
+        description = "Fetch a diagram from the KerML or SysML v2 spec by its printed figure number (e.g. 1 for \"Figure 1.\"). Returns the figure's title and owning clause, with the image attached inline so it can be viewed directly. Use get_section's `figures` list to discover figure numbers; entries whose number is null are uncaptioned diagrams, viewable inline via get_section. The result includes `context_md`: the prose around the figure in its clause."
     )]
     fn get_figure(
         &self,

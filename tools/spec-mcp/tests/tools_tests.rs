@@ -285,6 +285,63 @@ fn get_figure_from_real_spec() {
     assert_eq!(fig.title, "KerML Syntax Layers");
     assert_eq!(fig.clause_id, "8.3.1");
     assert!(fig.image_file.ends_with(".jpeg"));
+    let context = fig.context_md.as_deref().expect("figure 1 has context");
+    assert!(context.contains("Figure 1."), "context: {context}");
+}
+
+#[test]
+fn get_figure_returns_surrounding_prose() {
+    let md = "## <span id=\"page-1-0\"></span>**8.3.1 Diagrams**\n\n\
+              Leading prose sentence. The diagram below summarises the layers.\n\n\
+              ![](_page_1_Figure_1.jpeg)\n\n\
+              **Figure 1. Widget diagram**\n\n\
+              Trailing prose sentence follows the caption. Another trailing sentence.\n";
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, md, "", crates_dir).unwrap();
+
+    let fig = server.get_figure_impl(SpecId::Kerml, 1).unwrap();
+    assert_eq!(fig.clause_id, "8.3.1");
+    let context = fig
+        .context_md
+        .as_deref()
+        .expect("synthetic figure has context");
+    assert!(context.contains("Widget diagram"), "context: {context}");
+    assert!(
+        context.contains("Leading prose sentence."),
+        "context: {context}"
+    );
+    assert!(
+        context.contains("Another trailing sentence."),
+        "context: {context}"
+    );
+}
+
+#[test]
+fn every_numbered_figure_has_context() {
+    for path in [
+        "../../docs/spec/1-Kernel_Modeling_Language/1-Kernel_Modeling_Language.md",
+        "../../docs/spec/2a-OMG_Systems_Modeling_Language/2a-OMG_Systems_Modeling_Language.md",
+    ] {
+        let md = std::fs::read_to_string(path).unwrap();
+        let crates_dir = std::path::PathBuf::from("../../crates");
+        let server = SpecServer::with_spec_source(SpecId::Kerml, &md, "", crates_dir).unwrap();
+        let index = spec_mcp::index::build_index(&md, "").unwrap();
+        let numbers: Vec<u32> = index.figures().iter().filter_map(|f| f.number).collect();
+        assert!(
+            numbers.len() > 30,
+            "expected the full figure corpus in {path}"
+        );
+        for number in numbers {
+            let fig = server.get_figure_impl(SpecId::Kerml, number).unwrap();
+            let context = fig.context_md.unwrap_or_else(|| {
+                panic!("figure {number} in clause {} has no context", fig.clause_id)
+            });
+            assert!(
+                context.contains(&format!("Figure {number}.")),
+                "figure {number} context misses its caption: {context}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -321,6 +378,11 @@ fn embedded_figures_resolve_to_image_bytes() {
             &bytes[..2],
             &[0xFF, 0xD8],
             "not a JPEG for {}",
+            spec.label()
+        );
+        assert!(
+            fig.context_md.is_some(),
+            "figure 1 has no surrounding prose in {}",
             spec.label()
         );
     }

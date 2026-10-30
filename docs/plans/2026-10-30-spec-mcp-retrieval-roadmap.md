@@ -6,7 +6,7 @@
 - [x] P3 — Add ancestor path to get_section result
 - [x] P4 — Add find_symbol grammar and prose cross-reference tool
 - [x] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
-- [ ] P6 — Return surrounding prose context from get_figure
+- [x] P6 — Return surrounding prose context from get_figure
 - [ ] P7 — Vendor MiniLM q8 model and add embedding engine with disk cache
 - [ ] P8 — Add semantic_search tool with eval gate against tf-idf
 
@@ -494,3 +494,5 @@ Every phase: gate command (fmt/clippy/test) + the phase's stdio smoke with its e
 - P2: `spec_toc` nesting corrected to the same id-derived parent rule (deepest existing proper dotted prefix; clauses with no such prefix are roots) in the `Nest spec_toc by clause id hierarchy` commit, keeping the `TocNode`/`TocResult`/`TocQuery` wire shapes and the tool description unchanged.
 - P5: `df` is corpus-wide document frequency (clauses whose own text contains the unit, over all `N = clauses.len()`), matching the phase's test arithmetic (`df(alpha)=6`, `N=6`) and standard tf-idf; per-matching-clause df degenerates to a constant idf under the AND-token semantics. The flip test's A body is `alpha beta beta beta` (3 beta, 4 occurrences total) so raw occurrence-count ranking genuinely puts B (5) first while tf-idf puts A first.
 - P5 follow-up: the match length threaded from `scan_re`/`units`/`match_text` into `snippet` was never read once the ±`SNIPPET_RADIUS` char window became a sentence window, so `snippet(clause_idx, pos)` now takes two arguments and the length is gone from the whole pipeline (`Remove unused match length from snippet pipeline`). Later phases call `snippet(i, pos)`; the plan text still shows the three-argument form.
+- P6: clause→figure direction needed no work (corpus fact: every "Figure N" string in both specs is a caption — 42/42 KerML, 76/76 SysML — so `get_section.figures` already answers "koje figure cita klauza X"); P6 adds the reverse direction only, `get_figure.context_md` (±2-sentence window around the image link, caption included).
+- P6 fix (enabling): `find_clause_for_byte` picked the longest *id* among enclosing clauses, which mis-attributed 24/44 KerML figures (an ancestor whose `body_end` overshoots into following chapters has a longer id than the deepest clause); it now picks the enclosing clause with the largest `body_start` (the innermost), leaving 2 KerML + 1 SysML front-matter images outside every clause (no context, `clause_id` empty). Offsets are `FigureRef::link_start`/`link_end`; `figure_context` still guards the own-text bounds, so a pathological corpus yields `None` instead of a panic.
