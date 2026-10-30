@@ -71,9 +71,20 @@ impl SpecServer {
             return vec![];
         };
         let clauses = index.list_clauses();
-        let min_level = clauses.iter().map(|c| c.level).min().unwrap_or(1);
-        let mut i = 0;
-        nest(clauses, &mut i, min_level, 0, max_depth)
+        // Each clause attaches to its id-derived parent (deepest existing
+        // proper dotted prefix); clauses with no such prefix are roots.
+        let mut child_links: Vec<Vec<usize>> = vec![Vec::new(); clauses.len()];
+        let mut roots: Vec<usize> = Vec::new();
+        for (i, c) in clauses.iter().enumerate() {
+            match index.parent_index(&c.id) {
+                Some(p) => child_links[p].push(i),
+                None => roots.push(i),
+            }
+        }
+        roots
+            .iter()
+            .flat_map(|&i| toc_subtree(clauses, &child_links, i, 1, max_depth))
+            .collect()
     }
 
     /// All clause ids of a spec in document order, or empty when the spec is
@@ -300,38 +311,32 @@ impl SpecServer {
     }
 }
 
-/// Nest pre-order clause nodes into a tree. `i` is the cursor into the
-/// doc-order clause list; a node's children are the following clauses at a
-/// deeper level. Level jumps (e.g. depth 1 -> 3) attach to the current stack
-/// top — the same rule `extract_clause_tree` uses for body_end. Nodes deeper
-/// than `max_depth` are dropped with their subtrees.
-fn nest(
+/// Build the TOC subtree rooted at the clause at index `i` (which is at
+/// `depth`): one node whose `children` are its children (document order),
+/// each recursed at `depth + 1`. Returns an empty vec when `depth` exceeds
+/// `max_depth`, dropping the subtree.
+fn toc_subtree(
     clauses: &[ClauseNode],
-    i: &mut usize,
-    min_level: u8,
-    parent_depth: u8,
+    child_links: &[Vec<usize>],
+    i: usize,
+    depth: u8,
     max_depth: Option<u8>,
 ) -> Vec<TocNode> {
-    let mut out = Vec::new();
-    while *i < clauses.len() {
-        let d = clauses[*i].level - min_level + 1;
-        if d <= parent_depth {
-            break;
-        }
-        let c = clauses[*i].clone();
-        *i += 1;
-        let children = nest(clauses, i, min_level, d, max_depth);
-        if max_depth.is_none_or(|m| d <= m) {
-            out.push(TocNode {
-                id: c.id,
-                title: c.title,
-                anchor: c.anchor,
-                depth: d,
-                children,
-            });
-        }
+    if !max_depth.is_none_or(|m| depth <= m) {
+        return Vec::new();
     }
-    out
+    let mut node = TocNode {
+        id: clauses[i].id.clone(),
+        title: clauses[i].title.clone(),
+        anchor: clauses[i].anchor.clone(),
+        depth,
+        children: Vec::new(),
+    };
+    for &c in &child_links[i] {
+        node.children
+            .extend(toc_subtree(clauses, child_links, c, depth + 1, max_depth));
+    }
+    vec![node]
 }
 
 fn json_text_content<T: Serialize>(value: &T) -> Result<Content, ErrorData> {

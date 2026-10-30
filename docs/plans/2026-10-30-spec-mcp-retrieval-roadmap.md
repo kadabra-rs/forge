@@ -487,3 +487,8 @@ Every phase: gate command (fmt/clippy/test) + the phase's stdio smoke with its e
 - **Semantic first-call latency vs MCP client timeouts**: cache write happens after full computation; if a client kills the server mid-compute the cache never lands. Orchestrator warms the cache manually via the P8 smoke (timeout 600) immediately after C8 — before any agent traffic.
 - **HF revision drift**: model files pinned to revision `751bff3…` with byte-size checks; if the download 404s, stop and report (do not substitute `main`).
 - **Eval ground truth**: expected clause ids for the P8 query set are collected by the P8 implementer via get_section reading and frozen in `tests/semantic_eval.rs`; if fewer than 3 exclusive semantic wins materialize, the drop procedure is mandatory, not negotiable.
+
+## Execution notes
+
+- P3: `SpecIndex::ancestors` is derived from the dotted clause id (every existing proper numeric prefix, root-first), **not** from heading levels — in the OMG sources a child heading can sit at the same level as its parent (e.g. `8.2.1` is `###` like its parent `8.2`; 494/534 KerML clauses resolve to a different parent under the level-walk). Level-walk nesting would also have mis-nested the P2 outline.
+- P2: `spec_toc` nesting corrected to the same id-derived parent rule (deepest existing proper dotted prefix; clauses with no such prefix are roots) in the `Nest spec_toc by clause id hierarchy` commit, keeping the `TocNode`/`TocResult`/`TocQuery` wire shapes and the tool description unchanged.

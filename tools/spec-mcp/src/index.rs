@@ -107,6 +107,20 @@ impl SpecIndex {
         chain
     }
 
+    /// Index of the clause's parent: the deepest existing proper dotted
+    /// prefix of the id (heading levels are not reliable — a child can sit
+    /// at the same level as its parent). `None` when no proper prefix
+    /// exists, i.e. the clause is a root.
+    pub fn parent_index(&self, clause_id: &str) -> Option<usize> {
+        let mut parent = None;
+        for prefix in dotted_prefixes(clause_id) {
+            if let Some(&i) = self.by_id.get(&prefix) {
+                parent = Some(i);
+            }
+        }
+        parent
+    }
+
     pub fn productions(&self) -> &[Production] {
         &self.productions
     }

@@ -403,5 +403,20 @@ fn spec_toc_real_spec_chapters() {
         "KerML top-level outline should include chapter 7, got: {:?}",
         toc.iter().map(|n| n.id.as_str()).collect::<Vec<_>>()
     );
-    assert!((5..=25).contains(&toc.len()), "chapter count {}", toc.len());
+
+    // The full outline nests by dotted clause id: `8.2.4.1.1` sits under
+    // 8 -> 8.2 -> 8.2.4 -> 8.2.4.1 even though its heading is at the same
+    // level as its parent's (heading levels are not reliable).
+    let full = server.spec_toc_impl(SpecId::Kerml, None);
+    let mut cur = full
+        .iter()
+        .find(|n| n.id == "8")
+        .expect("chapter 8 in the KerML outline");
+    for (expected, depth) in [("8.2", 2), ("8.2.4", 3), ("8.2.4.1", 4), ("8.2.4.1.1", 5)] {
+        let Some(pos) = cur.children.iter().position(|c| c.id == expected) else {
+            panic!("{expected} not a child of {}", cur.id);
+        };
+        assert_eq!(cur.children[pos].depth, depth);
+        cur = &cur.children[pos];
+    }
 }
