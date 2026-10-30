@@ -1,0 +1,151 @@
+name: spec-mcp release
+
+# Tag-driven release of tools/spec-mcp: builds the self-contained MCP server
+# for each platform, publishes a GitHub release with the tarballs +
+# SHA256SUMS.txt, and publishes the npm launcher package (@kadabra-rs/spec-mcp)
+# whose version must match the tag.
+#
+#   git tag spec-mcp-v0.2.0 && git push origin spec-mcp-v0.2.0
+#
+# npm publishing requires the NPM_TOKEN secret and an existing @kadabra-rs
+# npm organization.
+
+on:
+  push:
+    tags:
+      - "spec-mcp-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0), must match tools/spec-mcp/npm/package.json"
+        required: true
+      skip_npm:
+        description: "Skip the npm publish job"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#spec-mcp-v}"
+          fi
+          PKG_V=$(node -p "require('./tools/spec-mcp/npm/package.json').version")
+          if [ "$V" != "$PKG_V" ]; then
+            echo "error: tag version '$V' != npm package.json version '$PKG_V'" >&2
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: linux-arm64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: darwin-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: darwin-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/spec-mcp
+      - name: Build
+        working-directory: tools/spec-mcp
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Test (native targets only)
+        working-directory: tools/spec-mcp
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' }}
+        run: cargo test --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          V="${{ needs.resolve-version.outputs.version }}"
+          BIN="tools/spec-mcp/target/${{ matrix.target }}/release/spec-mcp"
+          tar -czf "spec-mcp-$V-${{ matrix.name }}.tar.gz" -C "$(dirname "$BIN")" spec-mcp
+          shasum -a 256 "spec-mcp-$V-${{ matrix.name }}.tar.gz" > "spec-mcp-$V-${{ matrix.name }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spec-mcp-${{ matrix.name }}
+          path: |
+            spec-mcp-*.tar.gz
+            spec-mcp-*.sha256
+
+  release:
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: spec-mcp-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          python3 - <<'EOF'
+          import glob
+          lines = []
+          for f in sorted(glob.glob("*.sha256")):
+              sha, name = open(f).read().split()[:2]
+              lines.append(f"{sha}  {name}")
+          open("SHA256SUMS.txt", "w").write("\n".join(lines) + "\n")
+          EOF
+          rm -f *.sha256
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: spec-mcp-v${{ needs.resolve-version.outputs.version }}
+          name: spec-mcp v${{ needs.resolve-version.outputs.version }}
+          body: |
+            Self-contained MCP server for the OMG KerML 1.0 and SysML v2 specifications.
+
+            Install: `npx @kadabra-rs/spec-mcp` (or `bunx`), or download a platform
+            binary below and verify it against `SHA256SUMS.txt`.
+          files: dist/*
+          generate_release_notes: true
+
+  npm:
+    needs: [resolve-version, release]
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_npm) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Test launcher
+        working-directory: tools/spec-mcp/npm
+        run: node --test
+      - name: Publish
+        working-directory: tools/spec-mcp/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

@@ -76,6 +76,41 @@ cargo test       # run all tests
 cargo clippy --all-targets -- -D warnings
 ```
 
+### Spec MCP oracle
+
+`tools/spec-mcp` is the `spec` MCP server (wired via `.mcp.json`): the OMG KerML 1.0 +
+SysML v2 specifications embedded in one self-contained binary — clause text, official
+`.kebnf` grammars, every figure/diagram, and the vendor worked-example model corpus.
+Agents consult it for how to model things (with clause/BNF citations); it documents,
+it does not validate.
+
+```bash
+npx -y @kadabra-rs/spec-mcp        # serve over stdio (or bunx); downloads + verifies the binary
+cd tools/spec-mcp && cargo build --release   # or build locally; run ./target/release/spec-mcp
+```
+
+See [`tools/spec-mcp/README.md`](tools/spec-mcp/README.md). Releases are tag-driven:
+`spec-mcp-vX.Y.Z` → platform binaries on GitHub Releases + the npm launcher
+(`.github/workflows/spec-mcp-release.yml`).
+
+### External SysML tooling
+
+Agent workflows validate models with [spec42](https://github.com/elan8/spec42)
+(parser/validator CLI; `spec42 check --format json` is the pass/fail gate) and
+[sysand](https://sysand.com) (constraint solver). Install the latest releases of both
+into `~/.local/bin` with:
+
+```bash
+sh tools/install-sysml-tooling.sh          # latest spec42 + sysand, checksum-verified
+SPEC42_VERSION=0.57.0 FORCE=1 sh tools/install-sysml-tooling.sh   # pin + reinstall
+```
+
+The two surfaces are combined in the **`sysml-modeling`** agent skill
+(`.omp/skills/sysml-modeling/SKILL.md`): ground syntax in the oracle → learn shape from
+the official examples → validate with spec42. Install it into your agent directory with
+`npx -y @kadabra-rs/spec-mcp skill install --agent all`, or take it straight from this
+repo with `npx skills add kadabra-rs/forge`.
+
 ## License
 
 Forge is **dual-licensed**:
