@@ -32,7 +32,7 @@ Typical loop: learn from the oracle → write the smallest slice → validate wi
 | `list_examples {spec}` | Index of the official worked-example corpus (paths grouped by topic). |
 | `get_example {spec, path}` | Full source of one example `.kerml`/`.sysml` file from the corpus. |
 | `follow_link {spec, link}` | Resolves `#anchor` cross-references found in clause text to their clause. |
-| `list_sections {spec}` | Full clause tree (id, title, anchor) — orient before drilling in. |
+| `spec_toc {spec, max_depth?}` | Nested clause outline (id, title, anchor, depth); max_depth 1–2 to orient, omit for the full tree. |
 | `find_implementation {spec, clause_id}` | Maps a clause to compiler code in the forge repo (only meaningful there). |
 
 The KerML spec holds the kernel semantics (clause 7.x), textual + abstract syntax (8.x); SysML v2 builds the systems layer on top. When a SysML clause says "see KerML 8.4.x", switch `spec` and follow it.

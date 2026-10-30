@@ -2,7 +2,7 @@
 
 - [x] P0 — Add spec-mcp retrieval roadmap tracker
 - [x] P1 — Add word/regex modes and figure-caption tier to search
-- [ ] P2 — Replace list_sections with nested spec_toc tool
+- [x] P2 — Replace list_sections with nested spec_toc tool
 - [ ] P3 — Add ancestor path to get_section result
 - [ ] P4 — Add find_symbol grammar and prose cross-reference tool
 - [ ] P5 — Rank body hits by tf-idf and widen snippets to sentence windows

@@ -23,7 +23,7 @@ Every tool takes `spec: "kerml" | "sysml"`.
 | `list_examples` | index of the official worked-example corpus (KerML examples, SysML training/validation) |
 | `get_example` | full source of one example `.kerml`/`.sysml` file from the corpus |
 | `follow_link` | resolve `#anchor` cross-references found in clause text |
-| `list_sections` | complete clause tree (id, title, anchor) |
+| `spec_toc` | nested clause outline (chapters → sections → clauses), optional max_depth |
 | `find_implementation` | map a clause to `crates/` compiler code (meaningful only inside the forge repo) |
 
 ## Layout

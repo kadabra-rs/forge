@@ -10,6 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::assets::{self, SpecId};
+use crate::clause_tree::ClauseNode;
 use crate::implementation::find_implementation;
 use crate::index::{SearchMode, SpecIndex, build_index};
 
@@ -65,19 +66,23 @@ impl SpecServer {
         })
     }
 
-    pub fn list_sections_impl(&self, spec: SpecId) -> Vec<ClauseSummary> {
+    pub fn spec_toc_impl(&self, spec: SpecId, max_depth: Option<u8>) -> Vec<TocNode> {
         let Some(index) = self.index(spec) else {
             return vec![];
         };
-        index
-            .list_clauses()
-            .iter()
-            .map(|c| ClauseSummary {
-                id: c.id.clone(),
-                title: c.title.clone(),
-                anchor: c.anchor.clone(),
-            })
-            .collect()
+        let clauses = index.list_clauses();
+        let min_level = clauses.iter().map(|c| c.level).min().unwrap_or(1);
+        let mut i = 0;
+        nest(clauses, &mut i, min_level, 0, max_depth)
+    }
+
+    /// All clause ids of a spec in document order, or empty when the spec is
+    /// not loaded.
+    pub fn clause_ids_impl(&self, spec: SpecId) -> Vec<String> {
+        let Some(index) = self.index(spec) else {
+            return vec![];
+        };
+        index.list_clauses().iter().map(|c| c.id.clone()).collect()
     }
 
     pub fn get_section_impl(&self, spec: SpecId, clause_id: &str) -> Option<SectionResult> {
@@ -286,6 +291,40 @@ impl SpecServer {
     }
 }
 
+/// Nest pre-order clause nodes into a tree. `i` is the cursor into the
+/// doc-order clause list; a node's children are the following clauses at a
+/// deeper level. Level jumps (e.g. depth 1 -> 3) attach to the current stack
+/// top — the same rule `extract_clause_tree` uses for body_end. Nodes deeper
+/// than `max_depth` are dropped with their subtrees.
+fn nest(
+    clauses: &[ClauseNode],
+    i: &mut usize,
+    min_level: u8,
+    parent_depth: u8,
+    max_depth: Option<u8>,
+) -> Vec<TocNode> {
+    let mut out = Vec::new();
+    while *i < clauses.len() {
+        let d = clauses[*i].level - min_level + 1;
+        if d <= parent_depth {
+            break;
+        }
+        let c = clauses[*i].clone();
+        *i += 1;
+        let children = nest(clauses, i, min_level, d, max_depth);
+        if max_depth.is_none_or(|m| d <= m) {
+            out.push(TocNode {
+                id: c.id,
+                title: c.title,
+                anchor: c.anchor,
+                depth: d,
+                children,
+            });
+        }
+    }
+    out
+}
+
 fn json_text_content<T: Serialize>(value: &T) -> Result<Content, ErrorData> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| ErrorData::internal_error(format!("serialization failed: {e}"), None))?;
@@ -306,9 +345,13 @@ pub struct ClauseSummary {
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SpecOnlyQuery {
-    /// Which spec to query: "kerml" or "sysml".
+pub struct TocQuery {
+    /// Which spec to outline: "kerml" or "sysml".
     pub spec: SpecId,
+    /// Maximum outline depth (1 = top-level chapters, e.g. "7 Semantics").
+    /// Omit for the complete tree.
+    #[serde(default)]
+    pub max_depth: Option<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -320,8 +363,19 @@ pub struct SectionQuery {
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ClauseListResult {
-    pub clauses: Vec<ClauseSummary>,
+pub struct TocNode {
+    pub id: String,
+    pub title: String,
+    pub anchor: String,
+    /// 1 = top-level chapter; deeper = nested section/clause.
+    pub depth: u8,
+    pub children: Vec<TocNode>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TocResult {
+    pub spec: String,
+    pub toc: Vec<TocNode>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -502,16 +556,17 @@ pub struct LinkResult {
 #[rmcp::tool_router]
 impl SpecServer {
     #[tool(
-        name = "list_sections",
-        description = "List the complete clause tree (clause id, title, anchor) of an OMG spec. Set spec to \"kerml\" (KerML 1.0, kernel language) or \"sysml\" (OMG SysML v2, systems layer). Use this to orient yourself before drilling into individual clauses with get_section."
+        name = "spec_toc",
+        description = "Nested outline of an OMG spec's clause tree: chapters, sections, and clauses with id, title, anchor, and depth (1 = top-level chapter). Optional max_depth trims deeper levels — use 1 or 2 to orient before drilling in with get_section; omit for the complete tree. Set spec to \"kerml\" or \"sysml\"."
     )]
-    fn list_sections(
+    fn spec_toc(
         &self,
-        Parameters(SpecOnlyQuery { spec }): Parameters<SpecOnlyQuery>,
-    ) -> Result<Json<ClauseListResult>, ErrorData> {
+        Parameters(TocQuery { spec, max_depth }): Parameters<TocQuery>,
+    ) -> Result<Json<TocResult>, ErrorData> {
         self.index_or_err(spec)?;
-        Ok(Json(ClauseListResult {
-            clauses: self.list_sections_impl(spec),
+        Ok(Json(TocResult {
+            spec: spec.label().to_string(),
+            toc: self.spec_toc_impl(spec, max_depth),
         }))
     }
 
@@ -677,9 +732,10 @@ impl rmcp::ServerHandler for SpecServer {
              embedded in the server binary. Every tool takes a `spec` parameter: \
              \"kerml\" for the Kernel Modeling Language (kernel semantics, clauses 7.x; \
              concrete/abstract syntax, clauses 8.x) or \"sysml\" for OMG SysML v2 (the \
-             systems-modeling layer built on KerML). Typical flow: search_sections to \
-             locate a clause, get_section to read it (figures arrive inline as images), \
-             get_syntax for grammar productions, follow_link to chase cross-references, \
+             systems-modeling layer built on KerML). Typical flow: spec_toc to \
+             see the outline, search_sections to locate a clause, get_section to \
+             read it (figures arrive inline as images), get_syntax for grammar \
+             productions, follow_link to chase cross-references, \
              find_implementation to map a clause to kermlc compiler code. The complete \
              OMG worked-example model corpus (`.kerml` and `.sysml` sources) is embedded \
              too: list_examples lists it, get_example returns any model's full text, so \

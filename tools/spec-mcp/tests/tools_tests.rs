@@ -34,7 +34,7 @@ fn get_section_returns_none_for_missing_clause() {
 fn unloaded_spec_returns_nothing() {
     let server = build_test_server();
     assert!(server.get_section_impl(SpecId::Sysml, "7.3.2").is_none());
-    assert!(server.list_sections_impl(SpecId::Sysml).is_empty());
+    assert!(server.spec_toc_impl(SpecId::Sysml, None).is_empty());
     assert!(
         server
             .search_sections_impl(SpecId::Sysml, "types", SearchMode::default())
@@ -44,12 +44,31 @@ fn unloaded_spec_returns_nothing() {
 }
 
 #[test]
-fn list_sections_returns_all_clauses() {
-    let server = build_test_server();
-    let clauses = server.list_sections_impl(SpecId::Kerml);
-    assert_eq!(clauses.len(), 2);
-    assert!(clauses.iter().any(|c| c.id == "7.3.2"));
-    assert!(clauses.iter().any(|c| c.id == "7.3.2.3"));
+fn spec_toc_nests_and_filters() {
+    let md = "## <span id=\"p1\"></span>**7.3 A**\n\n\
+              ### <span id=\"p2\"></span>**7.3.2 B**\n\n\
+              #### <span id=\"p3\"></span>**7.3.2.1 C**\n";
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, md, "", crates_dir).unwrap();
+
+    let toc = server.spec_toc_impl(SpecId::Kerml, None);
+    assert_eq!(toc.len(), 1);
+    assert_eq!(toc[0].id, "7.3");
+    assert_eq!(toc[0].depth, 1);
+    let mid = &toc[0].children;
+    assert_eq!(mid.len(), 1);
+    assert_eq!(mid[0].id, "7.3.2");
+    assert_eq!(mid[0].depth, 2);
+    let leaf = &mid[0].children;
+    assert_eq!(leaf.len(), 1);
+    assert_eq!(leaf[0].id, "7.3.2.1");
+    assert_eq!(leaf[0].depth, 3);
+    assert!(leaf[0].children.is_empty());
+
+    let shallow = server.spec_toc_impl(SpecId::Kerml, Some(1));
+    assert_eq!(shallow.len(), 1);
+    assert_eq!(shallow[0].id, "7.3");
+    assert!(shallow[0].children.is_empty());
 }
 
 #[test]
@@ -227,11 +246,14 @@ fn get_figure_from_real_spec() {
 fn embedded_server_indexes_both_specs() {
     let server = SpecServer::embedded(std::path::PathBuf::from("../../crates")).unwrap();
 
-    let kerml = server.list_sections_impl(SpecId::Kerml);
-    let sysml = server.list_sections_impl(SpecId::Sysml);
-    assert!(kerml.iter().any(|c| c.id == "7.3.2"), "KerML clause tree");
+    let kerml_ids = server.clause_ids_impl(SpecId::Kerml);
+    let sysml_ids = server.clause_ids_impl(SpecId::Sysml);
     assert!(
-        sysml.iter().any(|c| c.id.starts_with("7.")),
+        kerml_ids.contains(&"7.3.2".to_string()),
+        "KerML clause tree"
+    );
+    assert!(
+        sysml_ids.iter().any(|id| id.starts_with("7.")),
         "SysML clause tree"
     );
 
@@ -296,8 +318,8 @@ fn get_section_lists_figures_for_clause() {
 fn get_section_lists_uncaptioned_figures() {
     let server = SpecServer::embedded(std::path::PathBuf::from("../../crates")).unwrap();
     let mut hit = None;
-    for clause in server.list_sections_impl(SpecId::Sysml) {
-        let section = server.get_section_impl(SpecId::Sysml, &clause.id).unwrap();
+    for id in server.clause_ids_impl(SpecId::Sysml) {
+        let section = server.get_section_impl(SpecId::Sysml, &id).unwrap();
         if let Some(fig) = section.figures.iter().find(|f| f.number.is_none()) {
             let fig = fig.clone();
             hit = Some((section, fig));
@@ -320,4 +342,21 @@ fn get_section_lists_uncaptioned_figures() {
             f.image_file
         );
     }
+}
+
+#[test]
+fn spec_toc_real_spec_chapters() {
+    let server = SpecServer::embedded(std::path::PathBuf::from("../../crates")).unwrap();
+    let toc = server.spec_toc_impl(SpecId::Kerml, Some(1));
+    assert!(!toc.is_empty());
+    for node in &toc {
+        assert_eq!(node.depth, 1);
+        assert!(node.children.is_empty());
+    }
+    assert!(
+        toc.iter().any(|n| n.id == "7"),
+        "KerML top-level outline should include chapter 7, got: {:?}",
+        toc.iter().map(|n| n.id.as_str()).collect::<Vec<_>>()
+    );
+    assert!((5..=25).contains(&toc.len()), "chapter count {}", toc.len());
 }
