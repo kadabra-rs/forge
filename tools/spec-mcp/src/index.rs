@@ -88,6 +88,25 @@ impl SpecIndex {
         self.by_id.get(id).map(|&i| &self.clauses[i])
     }
 
+    /// Ancestor chain root-first (chapter → … → parent), exclusive of the
+    /// clause itself. Derived from the dotted clause id: every proper
+    /// numeric prefix of the id that exists in the document is an ancestor
+    /// (heading levels are NOT reliable in the OMG sources: a child can sit
+    /// at the same level as its parent). Missing levels are skipped
+    /// (numbering can jump). Empty for top-level clauses / unknown ids.
+    pub fn ancestors(&self, clause_id: &str) -> Vec<&ClauseNode> {
+        if !clause_id.contains('.') {
+            return Vec::new();
+        }
+        let mut chain = Vec::new();
+        for prefix in dotted_prefixes(clause_id) {
+            if let Some(&i) = self.by_id.get(&prefix) {
+                chain.push(&self.clauses[i]);
+            }
+        }
+        chain
+    }
+
     pub fn productions(&self) -> &[Production] {
         &self.productions
     }
@@ -420,4 +439,19 @@ fn build_anchor_map(md: &str, clauses: &[ClauseNode]) -> HashMap<String, String>
         }
     }
     map
+}
+
+/// All proper numeric prefixes of a dotted clause id, shortest first
+/// (`"8.2.4.1.1"` -> `"8"`, `"8.2"`, `"8.2.4"`, `"8.2.4.1"`).
+fn dotted_prefixes(id: &str) -> Vec<String> {
+    let parts: Vec<&str> = id.split('.').collect();
+    let mut out = Vec::new();
+    for i in 1..parts.len() {
+        if parts[i].chars().all(|c| c.is_ascii_digit()) {
+            out.push(parts[..=i - 1].join("."));
+        } else {
+            break;
+        }
+    }
+    out
 }

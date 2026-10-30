@@ -31,6 +31,51 @@ fn get_section_returns_none_for_missing_clause() {
 }
 
 #[test]
+fn get_section_returns_ancestor_path() {
+    let md = "## <span id=\"p1\"></span>**7.3 A**\n\n\
+              ### <span id=\"p2\"></span>**7.3.2 B**\n\n\
+              #### <span id=\"p3\"></span>**7.3.2.3 C**\n";
+    let crates_dir = std::path::PathBuf::from("../../crates");
+    let server = SpecServer::with_spec_source(SpecId::Kerml, md, "", crates_dir).unwrap();
+
+    let section = server.get_section_impl(SpecId::Kerml, "7.3.2.3").unwrap();
+    assert_eq!(section.id, "7.3.2.3");
+    assert_eq!(
+        section
+            .path
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["7.3", "7.3.2"]
+    );
+}
+
+#[test]
+fn get_section_returns_full_chain_on_real_spec() {
+    let server = SpecServer::embedded(std::path::PathBuf::from("../../crates")).unwrap();
+
+    let section = server.get_section_impl(SpecId::Kerml, "8.2.4.1.1").unwrap();
+    assert_eq!(
+        section
+            .path
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["8", "8.2", "8.2.4", "8.2.4.1"]
+    );
+
+    let section = server.get_section_impl(SpecId::Kerml, "8.2.4.2.2").unwrap();
+    assert_eq!(
+        section
+            .path
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["8", "8.2", "8.2.4", "8.2.4.2"]
+    );
+}
+
+#[test]
 fn unloaded_spec_returns_nothing() {
     let server = build_test_server();
     assert!(server.get_section_impl(SpecId::Sysml, "7.3.2").is_none());

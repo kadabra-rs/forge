@@ -109,6 +109,15 @@ impl SpecServer {
             title: clause.title.clone(),
             anchor: clause.anchor.clone(),
             line: clause.line,
+            path: index
+                .ancestors(clause_id)
+                .into_iter()
+                .map(|c| ClauseSummary {
+                    id: c.id.clone(),
+                    title: c.title.clone(),
+                    anchor: c.anchor.clone(),
+                })
+                .collect(),
             body_md: body,
             productions: productions.iter().map(|p| p.name.clone()).collect(),
             figures,
@@ -397,6 +406,9 @@ pub struct SectionResult {
     pub title: String,
     pub anchor: String,
     pub line: usize,
+    /// Ancestor clauses root-first (chapter → parent); the clause itself is
+    /// `id`/`title`.
+    pub path: Vec<ClauseSummary>,
     pub body_md: String,
     pub productions: Vec<String>,
     /// Figures whose images this clause's body links to. Their images are
@@ -572,7 +584,7 @@ impl SpecServer {
 
     #[tool(
         name = "get_section",
-        description = "Read one clause of the KerML or SysML v2 spec by clause id (e.g. \"7.3.2\", \"8.2.4.1.2\"). Returns the clause body as Markdown, the BNF production names it defines, and its figures — the figure images are attached to the result inline so diagrams can be viewed directly. Relative image links in the body (e.g. _page_131_Figure_3.jpeg) map to the entries in the `figures` list."
+        description = "Read one clause of the KerML or SysML v2 spec by clause id (e.g. \"7.3.2\", \"8.2.4.1.2\"). Returns the clause body as Markdown, the BNF production names it defines, and its figures — the figure images are attached to the result inline so diagrams can be viewed directly. Relative image links in the body (e.g. _page_131_Figure_3.jpeg) map to the entries in the `figures` list. The `path` field gives the ancestor chain (chapter → parent) for orientation."
     )]
     fn get_section(
         &self,
