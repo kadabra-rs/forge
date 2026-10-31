@@ -83,9 +83,11 @@ npx -y @kadabra-rs/spec-mcp      # see npm/README.md
 ## Releases
 
 Tag `spec-mcp-v<X.Y.Z>` (version must match both `Cargo.toml` and
-`npm/package.json`). `.github/workflows/spec-mcp-release.yml` builds
-linux-x64/arm64 + darwin-arm64/x64 binaries, publishes a GitHub release with
-`SHA256SUMS.txt`, and publishes the npm launcher package.
+`npm/package.json`). `.github/workflows/spec-mcp-release.yml` builds three
+platform binaries (linux-x64, linux-arm64, darwin-arm64), publishes a GitHub
+release with `SHA256SUMS.txt`, and publishes the npm launcher package. Intel
+macOS is not released: the semantic engine's onnxruntime has no
+x86_64-apple-darwin prebuilt (ort-sys 2.0.0-rc.13).
 
 ## Skill
 

@@ -123,7 +123,8 @@ IMPORTANT:
   it does NOT validate models. Standalone Cargo project (own workspace, not a root
   member): `cd tools/spec-mcp && cargo test`. Release: push tag `spec-mcp-vX.Y.Z`
   (version must match `Cargo.toml` and `npm/package.json`) →
-  `.github/workflows/spec-mcp-release.yml` builds 4 platforms, publishes the GitHub
+  `.github/workflows/spec-mcp-release.yml` builds 3 platforms (Intel macOS is
+  not released — onnxruntime has no x86_64-apple-darwin prebuilt), publishes the GitHub
   release (+`SHA256SUMS.txt`) and the npm launcher `@kadabra-rs/spec-mcp`
   (`npx -y @kadabra-rs/spec-mcp` downloads, checksum-verifies, caches the binary).
 - **`tools/install-sysml-tooling.sh`** — installs latest `spec42` (the SysML v2 /

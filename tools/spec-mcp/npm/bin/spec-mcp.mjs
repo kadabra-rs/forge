@@ -44,6 +44,13 @@ export function detectPlatform() {
 build it (cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) \
 and set SPEC_MCP_BINARY, or run: cargo install --git https://github.com/${GITHUB_REPO} --bin spec-mcp`);
   }
+  // Intel macOS is not released: the semantic engine's onnxruntime
+  // (ort-sys 2.0.0-rc.13) publishes no x86_64-apple-darwin prebuilt, so the
+  // release workflow has no darwin-x64 leg.
+  if (os === "darwin" && arch === "x64") {
+    fail(`no prebuilt spec-mcp binary for darwin/x64 (Intel macOS is not released); \
+build it (cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) and set SPEC_MCP_BINARY, or run: cargo install --git https://github.com/${GITHUB_REPO} --bin spec-mcp`);
+  }
   if (os === "linux" && !process.report?.getReport?.().header?.glibcVersionRuntime) {
     fail(`no prebuilt spec-mcp binary for linux/${arch}; build it \
 (cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) and set SPEC_MCP_BINARY`);
