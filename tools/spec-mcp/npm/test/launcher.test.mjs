@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -68,6 +69,60 @@ for (const format of ["gnutar", "pax"]) {
     assert.equal(untarOne(gz, name).toString(), "hello");
   });
 }
+
+// GNU tar length-prefixes every pax record ("206 path=./..." — the length
+// counts the whole record including itself), while libarchive omits the
+// length. The format loop above only reaches the pax branch with such
+// records on a GNU-tar host; bsdtar spells long names via the ustar prefix
+// field, so elsewhere the branch goes unexercised. This synthetic header
+// (header + size fields exactly as GNU tar writes them) covers it on every
+// platform.
+function makeSyntheticPaxGz(name, body) {
+  const octal = (b) => {
+    const hdr = Buffer.alloc(512);
+    const paxName = "./PaxHeaders/" + name.split("/").pop();
+    paxName.split("").forEach((c, i) => { hdr[i] = c.charCodeAt(0); });
+    const oct = b.length.toString(8).padStart(11, "0");
+    for (let i = 0; i < 11; i++) hdr[124 + i] = oct[i].charCodeAt(0);
+    hdr[136] = 0;
+    hdr[156] = "x".charCodeAt(0);
+    const data = Buffer.from(b, "utf8");
+    const pad = data.length % 512;
+    return [hdr, data, ...(pad ? [Buffer.alloc(512 - pad)] : [])];
+  };
+  // The entry header carries only the truncated name tail, exactly as GNU
+  // tar does for >100-byte names — the full path is only in the pax header
+  // above, so extraction cannot succeed unless pax parsing works.
+  const entry = Buffer.alloc(512);
+  entry.write(name.slice(-100), 0, "utf8");
+  entry[100] = 0;
+  entry.write("07".padStart(11, "0"), 124, "utf8"); // "payload"
+  entry[136] = 0;
+  entry[156] = "0".charCodeAt(0);
+  // Headers first, then the entry they describe — the same ordering real
+  // tar uses: an x/g header describes the following member.
+  const payload = Buffer.from("payload");
+  const tarBuf = Buffer.concat([
+    ...octal(body),
+    entry,
+    payload,
+    Buffer.alloc(512),
+  ]);
+  return gzipSync(tarBuf);
+}
+
+test("untarOne reads a length-prefixed pax extended header (GNU tar)", () => {
+  const name = "d1/" + "a".repeat(120) + "/spec-mcp";
+  const body = `235 path=./${name}\n29 mtime=123\n`;
+  // "235" octal = 157 = the body length below; "29" counts
+  // "29 mtime=123\n". The reader must skip the length prefix to reach
+  // "path=" — the failure mode the CI npm job hit on ubuntu (GNU tar 1.34).
+  const gz = makeSyntheticPaxGz(name, body);
+  assert.equal(untarOne(gz, name).toString(), "payload");
+  // libarchive-style header: same records, no length prefix.
+  const unprefixed = makeSyntheticPaxGz(name, `path=./${name}\nmtime=123\n`);
+  assert.equal(untarOne(unprefixed, name).toString(), "payload");
+});
 
 test("untarOne throws for missing member", () => {
   const gz = makeTarGz({ other: "x" });
