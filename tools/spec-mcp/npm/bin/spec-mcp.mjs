@@ -178,7 +178,7 @@ export function skillSource() {
   const packaged = join(HERE, "..", "skill", "SKILL.md");
   if (existsSync(packaged)) return packaged;
   // Inside the forge repo checkout, fall back to the canonical skill location.
-  const canonical = join(HERE, "..", "..", "..", "..", ".omp", "skills", SKILL_NAME, "SKILL.md");
+  const canonical = join(HERE, "..", "..", "..", "..", "skills", SKILL_NAME, "SKILL.md");
   if (existsSync(canonical)) return canonical;
   fail(`bundled skill missing from package (${packaged})`);
 }

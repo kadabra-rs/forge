@@ -133,11 +133,11 @@ IMPORTANT:
   Validation of `.sysml`/`.kerml` files goes through
   `spec42 check --format json` → `spec42 explain-diagnostic` → `spec42 model-export`
   (spec42 upstream removed its own MCP server in v0.50.0; the CLI is the surface).
-- **`.omp/skills/sysml-modeling/SKILL.md`** — canonical agent skill tying the two
+- **`skills/sysml-modeling/SKILL.md`** — canonical agent skill tying the two
   together: ground syntax/semantics in the oracle (never invent concrete syntax),
   learn shape from official examples, then validate with spec42. Shipped by
   `spec-mcp skill install` (npm launcher) and by `npx skills add kadabra-rs/forge`
-  (root `skills.sh.json` points discovery at `./.omp/skills`).
+  (root `skills.sh.json` points discovery at `./skills`).
 
 ## Progress Tracking
 

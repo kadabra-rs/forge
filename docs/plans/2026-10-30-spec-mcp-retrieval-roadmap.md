@@ -178,7 +178,7 @@ Only `src/index.rs`, `src/tools.rs`, tests. No new deps (`regex` already present
 
 ### Repo consumers of the removed tool name (clean cutover, part of this commit)
 
-- `.omp/skills/sysml-modeling/SKILL.md` line ~35: replace `| \`list_sections {spec}\` | Full clause tree (id, title, anchor) — orient before drilling in. |` with `| \`spec_toc {spec, max_depth?}\` | Nested clause outline (id, title, anchor, depth); max_depth 1–2 to orient, omit for the full tree. |`
+- `skills/sysml-modeling/SKILL.md` line ~35: replace `| \`list_sections {spec}\` | Full clause tree (id, title, anchor) — orient before drilling in. |` with `| \`spec_toc {spec, max_depth?}\` | Nested clause outline (id, title, anchor, depth); max_depth 1–2 to orient, omit for the full tree. |`
 - `tools/spec-mcp/README.md` line ~26: replace the `list_sections` row with `| \`spec_toc\` | nested clause outline (chapters → sections → clauses), optional max_depth |`.
 - Grep the whole repo for `list_sections` after edits — must return zero hits.
 

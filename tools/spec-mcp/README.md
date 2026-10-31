@@ -89,7 +89,7 @@ linux-x64/arm64 + darwin-arm64/x64 binaries, publishes a GitHub release with
 
 ## Skill
 
-The `sysml-modeling` agent skill (canonical copy: `.omp/skills/sysml-modeling/`
+The `sysml-modeling` agent skill (canonical copy: `skills/sysml-modeling/`
 at the repo root; staged into the npm package on `prepare`) teaches agents the
 workflow: ask this oracle for syntax/semantics with citations → model from the
 official examples → validate with `spec42 check`.
