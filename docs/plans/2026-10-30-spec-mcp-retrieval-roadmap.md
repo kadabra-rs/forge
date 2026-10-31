@@ -7,7 +7,7 @@
 - [x] P4 — Add find_symbol grammar and prose cross-reference tool
 - [x] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
 - [x] P6 — Return surrounding prose context from get_figure
-- [ ] P7 — Vendor MiniLM q8 model and add embedding engine with disk cache
+- [x] P7 — Add embedding engine with first-run model download and disk cache
 - [ ] P8 — Add semantic_search tool with eval gate against tf-idf
 
 Base: main @ 6f7a691. Resume protocol: first unchecked box.
@@ -58,7 +58,7 @@ Verified current state that reshapes the roadmap (all read this session):
    - [ ] P4 — Add find_symbol grammar and prose cross-reference tool
    - [ ] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
    - [ ] P6 — Return surrounding prose context from get_figure
-   - [ ] P7 — Vendor MiniLM q8 model and add embedding engine with disk cache
+   - [x] P7 — Add embedding engine with first-run model download and disk cache
    - [ ] P8 — Add semantic_search tool with eval gate against tf-idf
    ```
    plus a line `Base: main @ 6f7a691. Resume protocol: first unchecked box.`
@@ -496,3 +496,12 @@ Every phase: gate command (fmt/clippy/test) + the phase's stdio smoke with its e
 - P5 follow-up: the match length threaded from `scan_re`/`units`/`match_text` into `snippet` was never read once the ±`SNIPPET_RADIUS` char window became a sentence window, so `snippet(clause_idx, pos)` now takes two arguments and the length is gone from the whole pipeline (`Remove unused match length from snippet pipeline`). Later phases call `snippet(i, pos)`; the plan text still shows the three-argument form.
 - P6: clause→figure direction needed no work (corpus fact: every "Figure N" string in both specs is a caption — 42/42 KerML, 76/76 SysML — so `get_section.figures` already answers "koje figure cita klauza X"); P6 adds the reverse direction only, `get_figure.context_md` (±2-sentence window around the image link, caption included).
 - P6 fix (enabling): `find_clause_for_byte` picked the longest *id* among enclosing clauses, which mis-attributed 24/44 KerML figures (an ancestor whose `body_end` overshoots into following chapters has a longer id than the deepest clause); it now picks the enclosing clause with the largest `body_start` (the innermost), leaving 2 KerML + 1 SysML front-matter images outside every clause (no context, `clause_id` empty). Offsets are `FigureRef::link_start`/`link_end`; `figure_context` still guards the own-text bounds, so a pathological corpus yields `None` instead of a panic.
+
+- P7 (revised per user decision): the MiniLM model is **downloaded on first use**, not vendored into git or embedded in the binary — there is no `models/` directory and no `include_bytes!` in this phase (the plan's "Vendor MiniLM q8 model" design was rejected; the model bytes stay out of git and out of the binary — only the static ONNX Runtime library links in, growing the release binary ~24 → ~49 MB). The model is `all-MiniLM-L6-v2` (q8, `Xenova/all-MiniLM-L6-v2`), ~23 MB, pulled via `fastembed`'s `hf-hub` path into `cache_dir()` (`$SPEC_MCP_CACHE` → `$XDG_CACHE_HOME/spec-mcp` → `$HOME/.cache/spec-mcp` → temp dir); `show_download_progress` is off so progress bars never reach an MCP stdio stream.
+- P7: `fastembed =7.1.1` is **Apache-2.0**, not MIT as the plan claimed. Features: `default-features = false` + `hf-hub-native-tls` (kept: the model downloads on first run) + `ort-download-binaries-native-tls`; this drops `image-models` from the defaults.
+- P7: `hf-hub` **pins no revision** — the model resolves from the repo `main` ref at download time (the first download on this machine happened to land on revision `751bff3…`, matching the plan's byte-size table). Recorded as a known reproducibility limit: a future upstream change to that HF repo could alter the model on machines with cold caches. The clause-embedding cache is keyed on `CACHE_KEY` + spec + source length + clause count, so a corpus change invalidates it; the cache file is written via temp-file + rename and validated on load (exact dim/rows/byte-length).
+- P7: `TextEmbedding::embed` takes `&mut self`, so `SemanticEngine` holds the session in a `Mutex` (inference is serialized; one corpus pass plus one query per call).
+- P7: embedding input is `"{id} {title}\n{own text}"` with fenced code blocks removed and whitespace collapsed, split into ≤1600-char chunks (max 8 per clause), mean-pooled then L2-normalized — because 18% of clauses exceed the model's 512-token window and naive truncation would discard most of the substantive clauses. Clauses with no text left after code-block removal are excluded.
+- P7: `cargo audit` passes (exit 0) after the dependency: no advisories on fastembed/ort/tokenizers/hf-hub. The lockfile needed `cookie_store 0.22.0 → 0.22.1` (its `time 0.3.16` lower bound dragged in vulnerable `time 0.3.45`, RUSTSEC-2026-0009); `time` is pinned to `0.3.47` (fixed, Rust 1.85-compatible). The three remaining `cargo audit` warnings (paste unmaintained, anyhow/tokio unsoundness, both pre-existing in the tree) are not named by the phase's stop-condition.
+- P7: `ort/download-binaries` (pyke) prebuilt download verified on this machine (aarch64-apple-darwin): first `cargo build` fetched it without issue; the remaining release targets are still unverified until CI builds them.
+- P7: the engine test runs the model once per test process (cold cache: download + load ~a few seconds; warm: <1 s) — it is the only test that touches the engine, so no two tests race the hf-hub download. Cache round-trip tests use the dimension-generic `encode`/`decode`/`save`/`load` API with an explicit temp dir (no `set_var` in tests).

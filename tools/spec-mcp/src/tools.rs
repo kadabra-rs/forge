@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use base64::Engine as _;
 use regex::RegexBuilder;
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::assets::{self, SpecId};
 use crate::clause_tree::ClauseNode;
+use crate::embed::{SemanticEngine, SpecEmbeddings};
 use crate::implementation::find_implementation;
 use crate::index::{FigureRef, SearchMode, SpecIndex, build_index};
 use crate::symbols::SymbolKind;
@@ -27,7 +29,18 @@ const MAX_EXAMPLE_LISTING: usize = 600;
 pub struct SpecServer {
     specs: HashMap<SpecId, SpecIndex>,
     crates_dir: PathBuf,
+    /// Lazily initialized embedding model: empty until the first semantic
+    /// query, so startup cost (and the model download) stays off the hot path.
+    engine: EngineCell,
+    /// Lazily computed clause embeddings, one cell per loaded spec.
+    embeddings: HashMap<SpecId, EmbeddingCell>,
 }
+
+/// A lazily initialized embedding model; errors are cached as well.
+type EngineCell = OnceLock<std::result::Result<Arc<SemanticEngine>, String>>;
+
+/// Lazily computed clause embeddings for one spec; errors are cached too.
+type EmbeddingCell = OnceLock<std::result::Result<Arc<SpecEmbeddings>, String>>;
 
 impl SpecServer {
     /// Production constructor: both specs are built from assets embedded in
@@ -40,7 +53,15 @@ impl SpecServer {
                 build_index(assets::spec_md(spec), assets::spec_bnf(spec))?,
             );
         }
-        Ok(Self { specs, crates_dir })
+        Ok(Self {
+            specs,
+            crates_dir,
+            engine: OnceLock::new(),
+            embeddings: SpecId::ALL
+                .into_iter()
+                .map(|spec| (spec, OnceLock::new()))
+                .collect(),
+        })
     }
 
     /// Test constructor: a single spec built from the given sources.
@@ -52,7 +73,49 @@ impl SpecServer {
     ) -> Result<Self> {
         let mut specs = HashMap::new();
         specs.insert(spec, build_index(md, bnf)?);
-        Ok(Self { specs, crates_dir })
+        Ok(Self {
+            specs,
+            crates_dir,
+            engine: OnceLock::new(),
+            embeddings: HashMap::from([(spec, OnceLock::new())]),
+        })
+    }
+
+    /// The embedding model, loading (and on a cold cache downloading) it on
+    /// first use; errors are cached too, so a failed download does not retry
+    /// on every call.
+    #[allow(dead_code)] // consumed by semantic_search (Phase 8)
+    pub(crate) fn engine(&self) -> std::result::Result<Arc<SemanticEngine>, String> {
+        self.engine
+            .get_or_init(|| {
+                SemanticEngine::init()
+                    .map(Arc::new)
+                    .map_err(|err| format!("{err:#}"))
+            })
+            .clone()
+    }
+
+    /// Clause embeddings of `spec`, computed (and cached to disk) on first use.
+    #[allow(dead_code)] // consumed by semantic_search (Phase 8)
+    pub(crate) fn embeddings(
+        &self,
+        spec: SpecId,
+    ) -> std::result::Result<Arc<SpecEmbeddings>, String> {
+        let index = self
+            .specs
+            .get(&spec)
+            .ok_or_else(|| format!("spec '{}' is not loaded in this server", spec.label()))?;
+        let cell = self
+            .embeddings
+            .get(&spec)
+            .ok_or_else(|| format!("no embedding slot for spec '{}'", spec.label()))?;
+        cell.get_or_init(|| {
+            let engine = self.engine()?;
+            SpecEmbeddings::load_or_build(&engine, spec.label(), index)
+                .map(Arc::new)
+                .map_err(|err| format!("{err:#}"))
+        })
+        .clone()
     }
 
     fn index(&self, spec: SpecId) -> Option<&SpecIndex> {

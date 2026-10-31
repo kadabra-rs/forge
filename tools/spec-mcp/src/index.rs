@@ -88,6 +88,17 @@ impl SpecIndex {
         &self.clauses
     }
 
+    /// Per-clause own body text, aligned with `list_clauses()` (the embedding
+    /// input; see `crate::embed`).
+    pub fn own_texts(&self) -> &[String] {
+        &self.own_texts
+    }
+
+    /// Byte length of the source Markdown, part of the embedding cache key.
+    pub fn source_len(&self) -> usize {
+        self.src.len()
+    }
+
     pub fn clause(&self, id: &str) -> Option<&ClauseNode> {
         self.by_id.get(id).map(|&i| &self.clauses[i])
     }
