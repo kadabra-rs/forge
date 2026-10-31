@@ -15,3 +15,6 @@ proba.jsonl
 
 # PDF→Markdown conversion tooling (local venv + models, not redistributed)
 /tools/pdfconv/
+
+# Local agent config (kept out of the repo; backed up outside git)
+/.omp/
