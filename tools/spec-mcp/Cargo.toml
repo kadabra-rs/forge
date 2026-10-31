@@ -19,6 +19,12 @@ anyhow = "1.0.102"
 regex = "1.12.4"
 rust-embed = { version = "8", features = ["include-exclude"] }
 base64 = "0.22"
+# Semantic search. `hf-hub-native-tls` pulls the model from huggingface.co on
+# first use; the `image-models` feature is not needed.
+fastembed = { version = "=7.1.1", default-features = false, features = [
+    "hf-hub-native-tls",
+    "ort-download-binaries-native-tls",
+] }
 
 [lib]
 name = "spec_mcp"
