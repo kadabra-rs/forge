@@ -1,6 +1,6 @@
 {
   "name": "@kadabra-rs/spec-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Self-contained MCP server for the OMG KerML 1.0 and SysML v2 specifications: clause text, official BNF grammars, figures, and worked-example models, embedded in one binary.",
   "license": "AGPL-3.0-only",
   "type": "module",
