@@ -17,6 +17,7 @@ Every tool takes `spec: "kerml" | "sysml"`.
 | Tool | Purpose |
 | --- | --- |
 | `search_sections` | full-text clause search (id/title hits first, then body hits with snippets) |
+| `semantic_search` | meaning-based clause lookup by embedding similarity (first call downloads the model and caches embeddings; prefer `search_sections`/`find_symbol` for exact identifiers) |
 | `get_section` | clause body as Markdown + BNF production names it defines + figures (images inlined, up to 6) |
 | `get_syntax` | official `.kebnf` production bodies by name (exact or substring), with defining clause |
 | `get_figure` | one captioned diagram by printed figure number, inline |

@@ -84,7 +84,6 @@ impl SpecServer {
     /// The embedding model, loading (and on a cold cache downloading) it on
     /// first use; errors are cached too, so a failed download does not retry
     /// on every call.
-    #[allow(dead_code)] // consumed by semantic_search (Phase 8)
     pub(crate) fn engine(&self) -> std::result::Result<Arc<SemanticEngine>, String> {
         self.engine
             .get_or_init(|| {
@@ -96,7 +95,6 @@ impl SpecServer {
     }
 
     /// Clause embeddings of `spec`, computed (and cached to disk) on first use.
-    #[allow(dead_code)] // consumed by semantic_search (Phase 8)
     pub(crate) fn embeddings(
         &self,
         spec: SpecId,
@@ -116,6 +114,76 @@ impl SpecServer {
                 .map_err(|err| format!("{err:#}"))
         })
         .clone()
+    }
+
+    /// Rank the spec's embedded clauses by cosine similarity to a
+    /// natural-language query; the first call pays for the model download and
+    /// the clause-embedding pass, later calls read the disk cache.
+    pub fn semantic_search_impl(
+        &self,
+        spec: SpecId,
+        query: &str,
+        limit: Option<u16>,
+    ) -> Result<SemanticResult, ErrorData> {
+        if query.trim().is_empty() {
+            return Err(ErrorData::invalid_params("query must not be empty", None));
+        }
+        self.index_or_err(spec)?;
+        let embeddings = self
+            .embeddings(spec)
+            .map_err(|reason| ErrorData::internal_error(reason, None))?;
+        let engine = self
+            .engine()
+            .map_err(|reason| ErrorData::internal_error(reason, None))?;
+        let query = query.trim();
+        let query_row = engine
+            .embed(&[query.to_string()])
+            .map_err(|err| ErrorData::internal_error(format!("{err:#}"), None))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ErrorData::internal_error("the model returned no rows for the query", None)
+            })?;
+        let dim = crate::embed::MODEL_DIM;
+        let index = self.index(spec).unwrap();
+        let clauses = index.list_clauses();
+        // Cosine over unit rows is the dot product; ties break by document
+        // order so the ranking is deterministic.
+        let mut ranked: Vec<(usize, f32)> = embeddings
+            .clause_idxs
+            .iter()
+            .enumerate()
+            .map(|(r, &ci)| {
+                let row = &embeddings.vectors[r * dim..(r + 1) * dim];
+                let score = row.iter().zip(&query_row).map(|(a, b)| a * b).sum();
+                (ci, score)
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        let count = limit.unwrap_or(10).clamp(1, 25) as usize;
+        let hits = ranked
+            .iter()
+            .take(count)
+            .map(|&(ci, score)| {
+                let clause = &clauses[ci];
+                SemanticHit {
+                    id: clause.id.clone(),
+                    title: clause.title.clone(),
+                    anchor: clause.anchor.clone(),
+                    score,
+                    snippet: index.snippet(ci, 0),
+                }
+            })
+            .collect();
+        Ok(SemanticResult {
+            spec: spec.label().to_string(),
+            query: query.to_string(),
+            hits,
+        })
     }
 
     fn index(&self, spec: SpecId) -> Option<&SpecIndex> {
@@ -677,6 +745,33 @@ pub struct SymbolResult {
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticQuery {
+    /// Which spec to search: "kerml" or "sysml".
+    pub spec: SpecId,
+    /// Natural-language question or concept, e.g. "rules for flipping in/out direction".
+    pub query: String,
+    /// Max hits (default 10, clamped to 1..=25).
+    #[serde(default)]
+    pub limit: Option<u16>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticHit {
+    pub id: String,
+    pub title: String,
+    pub anchor: String,
+    pub score: f32,
+    pub snippet: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticResult {
+    pub spec: String,
+    pub query: String,
+    pub hits: Vec<SemanticHit>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ImplQuery {
     /// Which spec the clause belongs to: "kerml" or "sysml".
     pub spec: SpecId,
@@ -891,6 +986,17 @@ impl SpecServer {
     }
 
     #[tool(
+        name = "semantic_search",
+        description = "Semantic (embedding) search over clause meaning — use when lexical search_sections misses a concept phrased differently (e.g. \"rules for flipping in/out direction\" finds the conjugation clauses). Returns clauses ranked by cosine similarity (score) with snippets. The first call per spec downloads the model (~23 MB) and computes+ caches clause embeddings (~1 minute); later calls are fast. For identifiers and exact terms prefer search_sections or find_symbol."
+    )]
+    fn semantic_search(
+        &self,
+        Parameters(SemanticQuery { spec, query, limit }): Parameters<SemanticQuery>,
+    ) -> Result<Json<SemanticResult>, ErrorData> {
+        Ok(Json(self.semantic_search_impl(spec, &query, limit)?))
+    }
+
+    #[tool(
         name = "find_implementation",
         description = "Map a KerML/SysML spec clause to kermlc compiler code: derives expected lexer/parser symbols from the clause's BNF productions and greps the forge crates/ directory for them. Reports Implemented / NotStarted / OutOfScope with file:line entry points. Only works when the server runs inside the forge repo."
     )]
@@ -968,7 +1074,8 @@ impl rmcp::ServerHandler for SpecServer {
              find_implementation to map a clause to kermlc compiler code. The complete \
              OMG worked-example model corpus (`.kerml` and `.sysml` sources) is embedded \
              too: list_examples lists it, get_example returns any model's full text, so \
-             real modeling idioms can be copied instead of inventing syntax.",
+             real modeling idioms can be copied instead of inventing syntax. \
+             semantic_search finds clauses by meaning when lexical search misses.",
         )
     }
 }

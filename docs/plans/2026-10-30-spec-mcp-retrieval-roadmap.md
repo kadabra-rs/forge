@@ -8,7 +8,7 @@
 - [x] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
 - [x] P6 — Return surrounding prose context from get_figure
 - [x] P7 — Add embedding engine with first-run model download and disk cache
-- [ ] P8 — Add semantic_search tool with eval gate against tf-idf
+- [x] P8 — Add semantic_search tool with eval gate against tf-idf
 
 Base: main @ 6f7a691. Resume protocol: first unchecked box.
 
@@ -59,7 +59,7 @@ Verified current state that reshapes the roadmap (all read this session):
    - [ ] P5 — Rank body hits by tf-idf and widen snippets to sentence windows
    - [ ] P6 — Return surrounding prose context from get_figure
    - [x] P7 — Add embedding engine with first-run model download and disk cache
-   - [ ] P8 — Add semantic_search tool with eval gate against tf-idf
+   - [x] P8 — Add semantic_search tool with eval gate against tf-idf
    ```
    plus a line `Base: main @ 6f7a691. Resume protocol: first unchecked box.`
 3. Tick P0. Commit: `Add spec-mcp retrieval roadmap tracker`. No code changes → gate is `cargo test` unchanged (skip clippy/fmt, nothing touched).
@@ -504,4 +504,7 @@ Every phase: gate command (fmt/clippy/test) + the phase's stdio smoke with its e
 - P7: embedding input is `"{id} {title}\n{own text}"` with fenced code blocks removed and whitespace collapsed, split into ≤1600-char chunks (max 8 per clause), mean-pooled then L2-normalized — because 18% of clauses exceed the model's 512-token window and naive truncation would discard most of the substantive clauses. Clauses with no text left after code-block removal are excluded.
 - P7: `cargo audit` passes (exit 0) after the dependency: no advisories on fastembed/ort/tokenizers/hf-hub. The lockfile needed `cookie_store 0.22.0 → 0.22.1` (its `time 0.3.16` lower bound dragged in vulnerable `time 0.3.45`, RUSTSEC-2026-0009); `time` is pinned to `0.3.47` (fixed, Rust 1.85-compatible). The three remaining `cargo audit` warnings (paste unmaintained, anyhow/tokio unsoundness, both pre-existing in the tree) are not named by the phase's stop-condition.
 - P7: `ort/download-binaries` (pyke) prebuilt download verified on this machine (aarch64-apple-darwin): first `cargo build` fetched it without issue; the remaining release targets are still unverified until CI builds them.
-- P7: the engine test runs the model once per test process (cold cache: download + load ~a few seconds; warm: <1 s) — it is the only test that touches the engine, so no two tests race the hf-hub download. Cache round-trip tests use the dimension-generic `encode`/`decode`/`save`/`load` API with an explicit temp dir (no `set_var` in tests).
+
+- P8 eval gate — **KEPT**: `cargo test --release -- --ignored semantic_vs_lexical_recall --nocapture` (12 queries, 6 KerML + 6 SysML, all with ground truth frozen in `tests/semantic_eval.rs` after reading the candidate clauses): recall@5 lexical 4/12 = 0.333, semantic 11/12 = 0.917; exclusive semantic-only wins = 8, semantic-only losses = 1 (the "attribute usage typing and default values" query — lexical hit on `7.6.3` alone, semantic top-5 missed both `7.7.2` and `7.6.3`; semantic top-1 was the near-adjacent `7.7`). Keep-rule `sem_recall5 > lex_recall5 && exclusive_wins >= 3 && exclusive_losses <= 1` satisfied → the tool stays; no revert of C7/C8.
+- P8 timings (user-requested evidence, run on this machine, aarch64-apple-darwin, release): (a) cold engine init in a throwaway `SPEC_MCP_CACHE` (23 MB model download via hf-hub + session init + first embed): **3.5 s** of test-process time (9.8 s wall incl. release compile); (b) cold clause-embedding build, corpus absent from cache — KerML (471 embedded clauses, ~1103 KB md): **9.4 s**, SysML (705, ~1326 KB): **13.3 s**; (c) warm cache load — KerML: **49 ms**, SysML: **12 ms**; (d) one semantic query end-to-end after warm-up: **2 ms** (eval) / **3.8 s wall** for the full stdio server round trip in the smoke (initialize + call, cache warm, < 5 s requirement met).
+- P8 note: the `snippet(clause_idx, pos)` two-argument form from the P5 follow-up note is what `semantic_search_impl` calls (pos = 0, leading sentence window) and what the timing hooks use; the 3-argument form in the plan body is historical.

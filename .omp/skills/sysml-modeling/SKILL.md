@@ -26,6 +26,7 @@ Typical loop: learn from the oracle → write the smallest slice → validate wi
 | Tool | Returns |
 | --- | --- |
 | `search_sections {spec, query}` | Clauses whose id/title/body match, body hits with snippets. Entry point for any question. |
+| `semantic_search {spec, query, limit?}` | Meaning-based lookup when a concept is phrased differently than the spec's terms (lexical search misses it); ranked by cosine similarity. First call downloads the embedding model and caches clause embeddings. |
 | `get_section {spec, clause_id}` | Clause body as Markdown + BNF production names defined there + figures; diagram images arrive inline (uncaptioned diagrams have `number: null`, captioned ones carry their printed number). |
 | `get_syntax {spec, production}` | `.kebnf` production bodies (exact or substring match, exact first) with the defining clause. |
 | `get_figure {spec, figure_number}` | One captioned diagram, inline, with title and owning clause. |
