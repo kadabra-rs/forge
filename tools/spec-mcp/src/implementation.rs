@@ -1,6 +1,8 @@
 use anyhow::Result;
+use regex::Regex;
+use regex::escape;
+use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeSignal {
@@ -120,23 +122,38 @@ pub fn find_implementation(
 }
 
 fn grep_crates(dir: &Path, needle: &str) -> Result<Vec<String>> {
-    let output = Command::new("rg")
-        .arg("--no-heading")
-        .arg("-n")
-        .arg("--type")
-        .arg("rust")
-        .arg(needle)
-        .arg(dir)
-        .output()?;
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `rg` is not preinstalled on every CI runner image, so scan the tree
+    // directly instead of shelling out.
+    let re = Regex::new(&escape(needle))?;
     let mut hits = Vec::new();
-    for line in stdout.lines() {
-        if !hits.contains(&line.to_string()) {
-            hits.push(line.to_string());
+    search_rust_files(dir, &re, &mut hits)?;
+    let mut seen = HashSet::new();
+    hits.retain(|h| seen.insert(h.clone()));
+    Ok(hits)
+}
+
+fn search_rust_files(dir: &Path, re: &Regex, hits: &mut Vec<String>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let target = entry.path();
+        if target.is_dir() {
+            search_rust_files(&target, re, hits)?;
+            continue;
+        }
+        if target.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&target)?;
+        let rel = target
+            .strip_prefix(".")
+            .unwrap_or(&target)
+            .display()
+            .to_string();
+        for (i, line) in content.lines().enumerate() {
+            if re.is_match(line) {
+                hits.push(format!("{rel}:{}:{}", i + 1, line));
+            }
         }
     }
-    Ok(hits)
+    Ok(())
 }
