@@ -46,7 +46,7 @@ Every tool takes `spec: "kerml" | "sysml"`.
 | `list_examples` | index of the official worked-example model corpus |
 | `get_example` | full source of one example `.kerml`/`.sysml` file |
 | `follow_link` | resolve `#anchor` cross-references between clauses |
-| `list_sections` | complete clause tree (id, title, anchor) |
+| `spec_toc` | nested clause outline (chapters → sections → clauses), optional max_depth |
 | `find_implementation` | map a clause to compiler code (only inside the forge repo) |
 
 ## Bundled agent skill

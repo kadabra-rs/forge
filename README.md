@@ -106,7 +106,7 @@ SPEC42_VERSION=0.57.0 FORCE=1 sh tools/install-sysml-tooling.sh   # pin + reinst
 ```
 
 The two surfaces are combined in the **`sysml-modeling`** agent skill
-(`.omp/skills/sysml-modeling/SKILL.md`): ground syntax in the oracle → learn shape from
+(`skills/sysml-modeling/SKILL.md`): ground syntax in the oracle → learn shape from
 the official examples → validate with spec42. Install it into your agent directory with
 `npx -y @kadabra-rs/spec-mcp skill install --agent all`, or take it straight from this
 repo with `npx skills add kadabra-rs/forge`.

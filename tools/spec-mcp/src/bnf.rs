@@ -4,6 +4,9 @@ use anyhow::Result;
 pub struct Production {
     pub clause_id: String,
     pub name: String,
+    /// Declared supertype of the production (`Name : Supertype =`); `None`
+    /// for standalone productions.
+    pub supertype: Option<String>,
     pub body: String,
     pub line: usize,
 }
@@ -40,7 +43,7 @@ pub fn parse_bnf(src: &str) -> Result<Vec<Production>> {
         if trimmed.starts_with("//") || trimmed.starts_with('!') {
             continue;
         }
-        let Some((name, rhs)) = production_header(line) else {
+        let Some((name, supertype, rhs)) = production_header(line) else {
             continue;
         };
         let mut body = String::new();
@@ -61,6 +64,7 @@ pub fn parse_bnf(src: &str) -> Result<Vec<Production>> {
         productions.push(Production {
             clause_id: current_clause.clone(),
             name,
+            supertype,
             body: body.trim().to_string(),
             line: idx + 1,
         });
@@ -68,12 +72,13 @@ pub fn parse_bnf(src: &str) -> Result<Vec<Production>> {
     Ok(productions)
 }
 
-/// Column-0 production header. Returns the production name and the portion of
-/// the RHS that sits on the header line itself. Accepts `Name =`, `Name : Sup =`,
-/// and either form with a same-line RHS. Rejects indented lines and any line
-/// where `=` is not attached to the name (or `: Sup`) — i.e. RHS assignments
-/// using the `+=` / `?=` operators.
-fn production_header(line: &str) -> Option<(String, String)> {
+/// Column-0 production header. Returns the production name, its declared
+/// supertype (`None` for a plain `Name =` header), and the portion of the
+/// RHS that sits on the header line itself. Accepts `Name =`,
+/// `Name : Supertype =`, and either form with a same-line RHS. Rejects
+/// indented lines and any line where `=` is not attached to the name (or
+/// `: Supertype`) — i.e. RHS assignments using the `+=` / `?=` operators.
+fn production_header(line: &str) -> Option<(String, Option<String>, String)> {
     let is_ident_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let ascii_alpha = |c: char| c.is_ascii_alphabetic();
     let name_len = line.find(|c: char| !is_ident_char(c))?;
@@ -82,17 +87,19 @@ fn production_header(line: &str) -> Option<(String, String)> {
         return None;
     }
     let mut rest = line[name_len..].trim_start();
+    let mut supertype = None;
     if let Some(after_colon) = rest.strip_prefix(':') {
         let after_colon = after_colon.trim_start();
         let ty_len = after_colon.find(|c: char| !is_ident_char(c))?;
-        let supertype = &after_colon[..ty_len];
-        if supertype.is_empty() || !supertype.starts_with(ascii_alpha) {
+        let ty = &after_colon[..ty_len];
+        if ty.is_empty() || !ty.starts_with(ascii_alpha) {
             return None;
         }
+        supertype = Some(ty.to_string());
         rest = after_colon[ty_len..].trim_start();
     }
     let rhs = rest.strip_prefix('=')?.trim().to_string();
-    Some((name.to_string(), rhs))
+    Some((name.to_string(), supertype, rhs))
 }
 
 fn push_rhs_line(body: &mut String, rhs: &str) {

@@ -26,13 +26,14 @@ Typical loop: learn from the oracle → write the smallest slice → validate wi
 | Tool | Returns |
 | --- | --- |
 | `search_sections {spec, query}` | Clauses whose id/title/body match, body hits with snippets. Entry point for any question. |
+| `semantic_search {spec, query, limit?}` | Meaning-based lookup when a concept is phrased differently than the spec's terms (lexical search misses it); ranked by cosine similarity. First call downloads the embedding model and caches clause embeddings. |
 | `get_section {spec, clause_id}` | Clause body as Markdown + BNF production names defined there + figures; diagram images arrive inline (uncaptioned diagrams have `number: null`, captioned ones carry their printed number). |
 | `get_syntax {spec, production}` | `.kebnf` production bodies (exact or substring match, exact first) with the defining clause. |
 | `get_figure {spec, figure_number}` | One captioned diagram, inline, with title and owning clause. |
 | `list_examples {spec}` | Index of the official worked-example corpus (paths grouped by topic). |
 | `get_example {spec, path}` | Full source of one example `.kerml`/`.sysml` file from the corpus. |
 | `follow_link {spec, link}` | Resolves `#anchor` cross-references found in clause text to their clause. |
-| `list_sections {spec}` | Full clause tree (id, title, anchor) — orient before drilling in. |
+| `spec_toc {spec, max_depth?}` | Nested clause outline (id, title, anchor, depth); max_depth 1–2 to orient, omit for the full tree. |
 | `find_implementation {spec, clause_id}` | Maps a clause to compiler code in the forge repo (only meaningful there). |
 
 The KerML spec holds the kernel semantics (clause 7.x), textual + abstract syntax (8.x); SysML v2 builds the systems layer on top. When a SysML clause says "see KerML 8.4.x", switch `spec` and follow it.

@@ -1,8 +1,10 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use base64::Engine as _;
+use regex::RegexBuilder;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{CallToolResult, Content, ErrorData};
 use rmcp::tool;
@@ -10,8 +12,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::assets::{self, SpecId};
+use crate::clause_tree::ClauseNode;
+use crate::embed::{SemanticEngine, SpecEmbeddings};
 use crate::implementation::find_implementation;
-use crate::index::{SpecIndex, build_index};
+use crate::index::{FigureRef, SearchMode, SpecIndex, build_index};
+use crate::symbols::SymbolKind;
 
 /// Sections can reference many figures; inline at most this many images per
 /// get_section response. All figures are still listed in the JSON metadata.
@@ -24,7 +29,18 @@ const MAX_EXAMPLE_LISTING: usize = 600;
 pub struct SpecServer {
     specs: HashMap<SpecId, SpecIndex>,
     crates_dir: PathBuf,
+    /// Lazily initialized embedding model: empty until the first semantic
+    /// query, so startup cost (and the model download) stays off the hot path.
+    engine: EngineCell,
+    /// Lazily computed clause embeddings, one cell per loaded spec.
+    embeddings: HashMap<SpecId, EmbeddingCell>,
 }
+
+/// A lazily initialized embedding model; errors are cached as well.
+type EngineCell = OnceLock<std::result::Result<Arc<SemanticEngine>, String>>;
+
+/// Lazily computed clause embeddings for one spec; errors are cached too.
+type EmbeddingCell = OnceLock<std::result::Result<Arc<SpecEmbeddings>, String>>;
 
 impl SpecServer {
     /// Production constructor: both specs are built from assets embedded in
@@ -37,7 +53,15 @@ impl SpecServer {
                 build_index(assets::spec_md(spec), assets::spec_bnf(spec))?,
             );
         }
-        Ok(Self { specs, crates_dir })
+        Ok(Self {
+            specs,
+            crates_dir,
+            engine: OnceLock::new(),
+            embeddings: SpecId::ALL
+                .into_iter()
+                .map(|spec| (spec, OnceLock::new()))
+                .collect(),
+        })
     }
 
     /// Test constructor: a single spec built from the given sources.
@@ -49,7 +73,117 @@ impl SpecServer {
     ) -> Result<Self> {
         let mut specs = HashMap::new();
         specs.insert(spec, build_index(md, bnf)?);
-        Ok(Self { specs, crates_dir })
+        Ok(Self {
+            specs,
+            crates_dir,
+            engine: OnceLock::new(),
+            embeddings: HashMap::from([(spec, OnceLock::new())]),
+        })
+    }
+
+    /// The embedding model, loading (and on a cold cache downloading) it on
+    /// first use; errors are cached too, so a failed download does not retry
+    /// on every call.
+    pub(crate) fn engine(&self) -> std::result::Result<Arc<SemanticEngine>, String> {
+        self.engine
+            .get_or_init(|| {
+                SemanticEngine::init()
+                    .map(Arc::new)
+                    .map_err(|err| format!("{err:#}"))
+            })
+            .clone()
+    }
+
+    /// Clause embeddings of `spec`, computed (and cached to disk) on first use.
+    pub(crate) fn embeddings(
+        &self,
+        spec: SpecId,
+    ) -> std::result::Result<Arc<SpecEmbeddings>, String> {
+        let index = self
+            .specs
+            .get(&spec)
+            .ok_or_else(|| format!("spec '{}' is not loaded in this server", spec.label()))?;
+        let cell = self
+            .embeddings
+            .get(&spec)
+            .ok_or_else(|| format!("no embedding slot for spec '{}'", spec.label()))?;
+        cell.get_or_init(|| {
+            let engine = self.engine()?;
+            SpecEmbeddings::load_or_build(&engine, spec.label(), index)
+                .map(Arc::new)
+                .map_err(|err| format!("{err:#}"))
+        })
+        .clone()
+    }
+
+    /// Rank the spec's embedded clauses by cosine similarity to a
+    /// natural-language query; the first call pays for the model download and
+    /// the clause-embedding pass, later calls read the disk cache.
+    pub fn semantic_search_impl(
+        &self,
+        spec: SpecId,
+        query: &str,
+        limit: Option<u16>,
+    ) -> Result<SemanticResult, ErrorData> {
+        if query.trim().is_empty() {
+            return Err(ErrorData::invalid_params("query must not be empty", None));
+        }
+        self.index_or_err(spec)?;
+        let embeddings = self
+            .embeddings(spec)
+            .map_err(|reason| ErrorData::internal_error(reason, None))?;
+        let engine = self
+            .engine()
+            .map_err(|reason| ErrorData::internal_error(reason, None))?;
+        let query = query.trim();
+        let query_row = engine
+            .embed(&[query.to_string()])
+            .map_err(|err| ErrorData::internal_error(format!("{err:#}"), None))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ErrorData::internal_error("the model returned no rows for the query", None)
+            })?;
+        let dim = crate::embed::MODEL_DIM;
+        let index = self.index(spec).unwrap();
+        let clauses = index.list_clauses();
+        // Cosine over unit rows is the dot product; ties break by document
+        // order so the ranking is deterministic.
+        let mut ranked: Vec<(usize, f32)> = embeddings
+            .clause_idxs
+            .iter()
+            .enumerate()
+            .map(|(r, &ci)| {
+                let row = &embeddings.vectors[r * dim..(r + 1) * dim];
+                let score = row.iter().zip(&query_row).map(|(a, b)| a * b).sum();
+                (ci, score)
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        let count = limit.unwrap_or(10).clamp(1, 25) as usize;
+        let hits = ranked
+            .iter()
+            .take(count)
+            .map(|&(ci, score)| {
+                let clause = &clauses[ci];
+                SemanticHit {
+                    id: clause.id.clone(),
+                    title: clause.title.clone(),
+                    anchor: clause.anchor.clone(),
+                    score,
+                    snippet: index.snippet(ci, 0),
+                }
+            })
+            .collect();
+        Ok(SemanticResult {
+            spec: spec.label().to_string(),
+            query: query.to_string(),
+            hits,
+        })
     }
 
     fn index(&self, spec: SpecId) -> Option<&SpecIndex> {
@@ -65,19 +199,34 @@ impl SpecServer {
         })
     }
 
-    pub fn list_sections_impl(&self, spec: SpecId) -> Vec<ClauseSummary> {
+    pub fn spec_toc_impl(&self, spec: SpecId, max_depth: Option<u8>) -> Vec<TocNode> {
         let Some(index) = self.index(spec) else {
             return vec![];
         };
-        index
-            .list_clauses()
+        let clauses = index.list_clauses();
+        // Each clause attaches to its id-derived parent (deepest existing
+        // proper dotted prefix); clauses with no such prefix are roots.
+        let mut child_links: Vec<Vec<usize>> = vec![Vec::new(); clauses.len()];
+        let mut roots: Vec<usize> = Vec::new();
+        for (i, c) in clauses.iter().enumerate() {
+            match index.parent_index(&c.id) {
+                Some(p) => child_links[p].push(i),
+                None => roots.push(i),
+            }
+        }
+        roots
             .iter()
-            .map(|c| ClauseSummary {
-                id: c.id.clone(),
-                title: c.title.clone(),
-                anchor: c.anchor.clone(),
-            })
+            .flat_map(|&i| toc_subtree(clauses, &child_links, i, 1, max_depth))
             .collect()
+    }
+
+    /// All clause ids of a spec in document order, or empty when the spec is
+    /// not loaded.
+    pub fn clause_ids_impl(&self, spec: SpecId) -> Vec<String> {
+        let Some(index) = self.index(spec) else {
+            return vec![];
+        };
+        index.list_clauses().iter().map(|c| c.id.clone()).collect()
     }
 
     pub fn get_section_impl(&self, spec: SpecId, clause_id: &str) -> Option<SectionResult> {
@@ -104,32 +253,51 @@ impl SpecServer {
             title: clause.title.clone(),
             anchor: clause.anchor.clone(),
             line: clause.line,
+            path: index
+                .ancestors(clause_id)
+                .into_iter()
+                .map(|c| ClauseSummary {
+                    id: c.id.clone(),
+                    title: c.title.clone(),
+                    anchor: c.anchor.clone(),
+                })
+                .collect(),
             body_md: body,
             productions: productions.iter().map(|p| p.name.clone()).collect(),
             figures,
         })
     }
 
-    pub fn search_sections_impl(&self, spec: SpecId, query: &str) -> Vec<SearchHitSummary> {
+    pub fn search_sections_impl(
+        &self,
+        spec: SpecId,
+        query: &str,
+        mode: SearchMode,
+    ) -> Result<Vec<SearchHitSummary>, ErrorData> {
         let Some(index) = self.index(spec) else {
-            return vec![];
+            return Ok(vec![]);
         };
-        index
-            .search(query)
+        let hits = index
+            .search(query, mode)
+            .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?;
+        Ok(hits
             .into_iter()
             .map(|hit| SearchHitSummary {
                 id: hit.clause.id.clone(),
                 title: hit.clause.title.clone(),
                 anchor: hit.clause.anchor.clone(),
-                matched: if hit.snippet.is_some() {
+                matched: if hit.figure.is_some() {
+                    "figure"
+                } else if hit.snippet.is_some() {
                     "body"
                 } else {
                     "title"
                 }
                 .to_string(),
+                figure_number: hit.figure,
                 snippet: hit.snippet,
             })
-            .collect()
+            .collect())
     }
 
     pub fn get_syntax_impl(&self, spec: SpecId, production: &str) -> Vec<ProductionResult> {
@@ -153,6 +321,74 @@ impl SpecServer {
                 line: p.line,
             })
             .collect()
+    }
+
+    /// Map an identifier to the grammar productions that define, reference,
+    /// or quote it, plus the clauses whose prose mentions it.
+    pub fn find_symbol_impl(&self, spec: SpecId, symbol: &str) -> Result<SymbolResult, ErrorData> {
+        let index = self.index_or_err(spec)?;
+        let sym = symbol.trim();
+        if sym.is_empty() {
+            return Err(ErrorData::invalid_params("symbol must not be empty", None));
+        }
+
+        // Grammar tier: exact keys first, then substring keys; dedup by
+        // (production name, kind), capped.
+        let (exact, partial) = index.symbols().lookup(sym, index.productions());
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut grammar = Vec::new();
+        for (p, occ) in exact.iter().chain(partial.iter()) {
+            let kind = kind_name(occ.kind).to_string();
+            if !seen.insert((p.name.clone(), kind.clone())) {
+                continue;
+            }
+            grammar.push(SymbolGrammarHit {
+                production: p.name.clone(),
+                supertype: p.supertype.clone(),
+                body: p.body.clone(),
+                clause_id: p.clause_id.clone(),
+                line: p.line,
+                kind,
+            });
+        }
+        grammar.truncate(30);
+
+        // Text tier: word-start prefix match in each clause's own body,
+        // ranked by occurrence count then document order.
+        let escaped = regex::escape(&sym.to_ascii_lowercase());
+        let re = RegexBuilder::new(&format!(r"\b{}", escaped))
+            .case_insensitive(true)
+            .build()
+            .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+        let clauses = index.list_clauses();
+        let mut matches = Vec::new();
+        for (i, lower) in index.own_texts_lower().iter().enumerate() {
+            let Some(first) = re.find(lower) else {
+                continue;
+            };
+            let count = re.find_iter(lower).count();
+            matches.push((count, i, first.start()));
+        }
+        matches.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        matches.truncate(20);
+        let text = matches
+            .into_iter()
+            .filter_map(|(_count, i, pos)| {
+                let clause = &clauses[i];
+                let snippet = index.snippet(i, pos)?;
+                Some(SymbolTextHit {
+                    clause_id: clause.id.clone(),
+                    title: clause.title.clone(),
+                    snippet,
+                })
+            })
+            .collect();
+
+        Ok(SymbolResult {
+            symbol: sym.to_string(),
+            grammar,
+            text,
+        })
     }
 
     pub fn find_implementation_impl(&self, spec: SpecId, clause_id: &str) -> ImplResult {
@@ -226,6 +462,7 @@ impl SpecServer {
             title: fig.title.clone(),
             image_file: fig.image_path.clone(),
             clause_id: fig.clause_id.clone(),
+            context_md: figure_context(index, fig),
         })
     }
 
@@ -276,6 +513,34 @@ impl SpecServer {
     }
 }
 
+/// Build the TOC subtree rooted at the clause at index `i` (which is at
+/// `depth`): one node whose `children` are its children (document order),
+/// each recursed at `depth + 1`. Returns an empty vec when `depth` exceeds
+/// `max_depth`, dropping the subtree.
+fn toc_subtree(
+    clauses: &[ClauseNode],
+    child_links: &[Vec<usize>],
+    i: usize,
+    depth: u8,
+    max_depth: Option<u8>,
+) -> Vec<TocNode> {
+    if !max_depth.is_none_or(|m| depth <= m) {
+        return Vec::new();
+    }
+    let mut node = TocNode {
+        id: clauses[i].id.clone(),
+        title: clauses[i].title.clone(),
+        anchor: clauses[i].anchor.clone(),
+        depth,
+        children: Vec::new(),
+    };
+    for &c in &child_links[i] {
+        node.children
+            .extend(toc_subtree(clauses, child_links, c, depth + 1, max_depth));
+    }
+    vec![node]
+}
+
 fn json_text_content<T: Serialize>(value: &T) -> Result<Content, ErrorData> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| ErrorData::internal_error(format!("serialization failed: {e}"), None))?;
@@ -288,6 +553,31 @@ fn image_content(spec: SpecId, image_file: &str) -> Option<Content> {
     Some(Content::image(data, "image/jpeg"))
 }
 
+/// Prose window around a figure's image link within its owning clause: the
+/// sentence holding the link plus up to two sentences on each side. The
+/// caption line directly follows the link in the markdown, so it lands inside
+/// the window. The owning clause is the deepest clause containing the link
+/// byte, so the link is normally inside its own text; the bounds guard keeps a
+/// pathological or synthetic corpus from slicing out of range.
+fn figure_context(index: &SpecIndex, fig: &FigureRef) -> Option<String> {
+    let clause = index.clause(&fig.clause_id)?;
+    let clause_idx = index.clause_index(&fig.clause_id)?;
+    if fig.link_start < clause.body_start || fig.link_end > clause.own_end {
+        return None;
+    }
+    index.snippet(clause_idx, fig.link_start - clause.body_start)
+}
+
+/// Wire-level name of a [`SymbolKind`] (`"definition" | "reference" |
+/// "keyword"`).
+fn kind_name(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Definition => "definition",
+        SymbolKind::Reference => "reference",
+        SymbolKind::Keyword => "keyword",
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClauseSummary {
     pub id: String,
@@ -296,9 +586,13 @@ pub struct ClauseSummary {
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SpecOnlyQuery {
-    /// Which spec to query: "kerml" or "sysml".
+pub struct TocQuery {
+    /// Which spec to outline: "kerml" or "sysml".
     pub spec: SpecId,
+    /// Maximum outline depth (1 = top-level chapters, e.g. "7 Semantics").
+    /// Omit for the complete tree.
+    #[serde(default)]
+    pub max_depth: Option<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -310,8 +604,19 @@ pub struct SectionQuery {
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ClauseListResult {
-    pub clauses: Vec<ClauseSummary>,
+pub struct TocNode {
+    pub id: String,
+    pub title: String,
+    pub anchor: String,
+    /// 1 = top-level chapter; deeper = nested section/clause.
+    pub depth: u8,
+    pub children: Vec<TocNode>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TocResult {
+    pub spec: String,
+    pub toc: Vec<TocNode>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -333,6 +638,9 @@ pub struct SectionResult {
     pub title: String,
     pub anchor: String,
     pub line: usize,
+    /// Ancestor clauses root-first (chapter → parent); the clause itself is
+    /// `id`/`title`.
+    pub path: Vec<ClauseSummary>,
     pub body_md: String,
     pub productions: Vec<String>,
     /// Figures whose images this clause's body links to. Their images are
@@ -347,6 +655,11 @@ pub struct SearchQuery {
     /// Case-insensitive query. Matched as a whole against clause ids and
     /// titles; body matches require every whitespace-separated token.
     pub query: String,
+    /// Match mode. "substring" (default): case-insensitive raw substrings, all
+    /// tokens must match. "word": whole-word matches only. "regex": the query
+    /// is one case-insensitive Rust regex.
+    #[serde(default)]
+    pub mode: Option<SearchMode>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -354,10 +667,15 @@ pub struct SearchHitSummary {
     pub id: String,
     pub title: String,
     pub anchor: String,
-    /// Where the query matched: "title" (clause id or title) or "body"
-    /// (clause text). Title matches are listed first.
+    /// Where the query matched: "title" (clause id or title), "figure"
+    /// (figure caption) or "body" (clause text). Title matches are listed
+    /// first, then figure caption matches, then body matches.
     pub matched: String,
-    /// For body matches, an excerpt around the first occurrence.
+    /// Printed figure number for "figure" matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub figure_number: Option<u32>,
+    /// For body matches, an excerpt around the first occurrence; for figure
+    /// matches, the caption line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
 }
@@ -388,6 +706,69 @@ pub struct ProductionResult {
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyntaxResult {
     pub productions: Vec<ProductionResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolQuery {
+    /// Which spec to search: "kerml" or "sysml".
+    pub spec: SpecId,
+    /// Identifier: keyword ("conjugates"), production ("Conjugation"), or
+    /// model-level name ("isComposite", "PortUsage").
+    pub symbol: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolGrammarHit {
+    pub production: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supertype: Option<String>,
+    /// Full EBNF right-hand side.
+    pub body: String,
+    pub clause_id: String,
+    pub line: usize,
+    /// "definition" | "reference" | "keyword".
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolTextHit {
+    pub clause_id: String,
+    pub title: String,
+    pub snippet: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SymbolResult {
+    pub symbol: String,
+    pub grammar: Vec<SymbolGrammarHit>,
+    pub text: Vec<SymbolTextHit>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticQuery {
+    /// Which spec to search: "kerml" or "sysml".
+    pub spec: SpecId,
+    /// Natural-language question or concept, e.g. "rules for flipping in/out direction".
+    pub query: String,
+    /// Max hits (default 10, clamped to 1..=25).
+    #[serde(default)]
+    pub limit: Option<u16>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticHit {
+    pub id: String,
+    pub title: String,
+    pub anchor: String,
+    pub score: f32,
+    pub snippet: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticResult {
+    pub spec: String,
+    pub query: String,
+    pub hits: Vec<SemanticHit>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -460,6 +841,10 @@ pub struct FigureResult {
     pub title: String,
     pub image_file: String,
     pub clause_id: String,
+    /// Prose surrounding the embedded image in its clause (±2 sentences),
+    /// including the caption line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_md: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -482,22 +867,23 @@ pub struct LinkResult {
 #[rmcp::tool_router]
 impl SpecServer {
     #[tool(
-        name = "list_sections",
-        description = "List the complete clause tree (clause id, title, anchor) of an OMG spec. Set spec to \"kerml\" (KerML 1.0, kernel language) or \"sysml\" (OMG SysML v2, systems layer). Use this to orient yourself before drilling into individual clauses with get_section."
+        name = "spec_toc",
+        description = "Nested outline of an OMG spec's clause tree: chapters, sections, and clauses with id, title, anchor, and depth (1 = top-level chapter). Optional max_depth trims deeper levels — use 1 or 2 to orient before drilling in with get_section; omit for the complete tree. Set spec to \"kerml\" or \"sysml\"."
     )]
-    fn list_sections(
+    fn spec_toc(
         &self,
-        Parameters(SpecOnlyQuery { spec }): Parameters<SpecOnlyQuery>,
-    ) -> Result<Json<ClauseListResult>, ErrorData> {
+        Parameters(TocQuery { spec, max_depth }): Parameters<TocQuery>,
+    ) -> Result<Json<TocResult>, ErrorData> {
         self.index_or_err(spec)?;
-        Ok(Json(ClauseListResult {
-            clauses: self.list_sections_impl(spec),
+        Ok(Json(TocResult {
+            spec: spec.label().to_string(),
+            toc: self.spec_toc_impl(spec, max_depth),
         }))
     }
 
     #[tool(
         name = "get_section",
-        description = "Read one clause of the KerML or SysML v2 spec by clause id (e.g. \"7.3.2\", \"8.2.4.1.2\"). Returns the clause body as Markdown, the BNF production names it defines, and its figures — the figure images are attached to the result inline so diagrams can be viewed directly. Relative image links in the body (e.g. _page_131_Figure_3.jpeg) map to the entries in the `figures` list."
+        description = "Read one clause of the KerML or SysML v2 spec by clause id (e.g. \"7.3.2\", \"8.2.4.1.2\"). Returns the clause body as Markdown, the BNF production names it defines, and its figures — the figure images are attached to the result inline so diagrams can be viewed directly. Relative image links in the body (e.g. _page_131_Figure_3.jpeg) map to the entries in the `figures` list. The `path` field gives the ancestor chain (chapter → parent) for orientation."
     )]
     fn get_section(
         &self,
@@ -561,15 +947,15 @@ impl SpecServer {
 
     #[tool(
         name = "search_sections",
-        description = "Full-text search over the KerML or SysML v2 spec, case-insensitive (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Clauses whose id or title contains the query are listed first; then clauses whose body contains every query token, ranked by occurrence count, each with a snippet around the first match. Returns clause ids to feed into get_section. Set spec to \"kerml\" or \"sysml\"."
+        description = "Full-text search over the KerML or SysML v2 spec (e.g. \"specialization\", \"isComposite\", \"8.3.4\"). Optional mode: \"substring\" (default) matches case-insensitive substrings, all tokens required; \"word\" matches whole words; \"regex\" treats the query as one case-insensitive Rust regex. Clauses whose id or title matches come first, then figure-caption matches (matched=\"figure\", with figure_number), then body matches ranked by tf-idf, each with a ±2-sentence snippet around the first match. Returns clause ids for get_section. Set spec to \"kerml\" or \"sysml\"."
     )]
     fn search_sections(
         &self,
-        Parameters(SearchQuery { spec, query }): Parameters<SearchQuery>,
+        Parameters(SearchQuery { spec, query, mode }): Parameters<SearchQuery>,
     ) -> Result<Json<SearchResult>, ErrorData> {
         self.index_or_err(spec)?;
         Ok(Json(SearchResult {
-            clauses: self.search_sections_impl(spec, &query),
+            clauses: self.search_sections_impl(spec, &query, mode.unwrap_or_default())?,
         }))
     }
 
@@ -588,6 +974,29 @@ impl SpecServer {
     }
 
     #[tool(
+        name = "find_symbol",
+        description = "Map any identifier — keyword ('conjugates'), grammar production (Conjugation), or model-level name (isComposite, PortUsage) — to where the spec defines and uses it: grammar hits (productions declaring, referencing, or quoting the name, with full EBNF body and defining clause) and text hits (clauses whose prose mentions it, with snippets). Exact matches first, then substring. Complements get_syntax, which searches production names only."
+    )]
+    fn find_symbol(
+        &self,
+        Parameters(SymbolQuery { spec, symbol }): Parameters<SymbolQuery>,
+    ) -> Result<Json<SymbolResult>, ErrorData> {
+        let result = self.find_symbol_impl(spec, &symbol)?;
+        Ok(Json(result))
+    }
+
+    #[tool(
+        name = "semantic_search",
+        description = "Semantic (embedding) search over clause meaning — use when lexical search_sections misses a concept phrased differently (e.g. \"rules for flipping in/out direction\" finds the conjugation clauses). Returns clauses ranked by cosine similarity (score) with snippets. The first call per spec downloads the model (~23 MB) and computes+ caches clause embeddings (~1 minute); later calls are fast. For identifiers and exact terms prefer search_sections or find_symbol."
+    )]
+    fn semantic_search(
+        &self,
+        Parameters(SemanticQuery { spec, query, limit }): Parameters<SemanticQuery>,
+    ) -> Result<Json<SemanticResult>, ErrorData> {
+        Ok(Json(self.semantic_search_impl(spec, &query, limit)?))
+    }
+
+    #[tool(
         name = "find_implementation",
         description = "Map a KerML/SysML spec clause to kermlc compiler code: derives expected lexer/parser symbols from the clause's BNF productions and greps the forge crates/ directory for them. Reports Implemented / NotStarted / OutOfScope with file:line entry points. Only works when the server runs inside the forge repo."
     )]
@@ -600,7 +1009,7 @@ impl SpecServer {
 
     #[tool(
         name = "get_figure",
-        description = "Fetch a diagram from the KerML or SysML v2 spec by its printed figure number (e.g. 1 for \"Figure 1.\"). Returns the figure's title and owning clause, with the image attached inline so it can be viewed directly. Use get_section's `figures` list to discover figure numbers; entries whose number is null are uncaptioned diagrams, viewable inline via get_section."
+        description = "Fetch a diagram from the KerML or SysML v2 spec by its printed figure number (e.g. 1 for \"Figure 1.\"). Returns the figure's title and owning clause, with the image attached inline so it can be viewed directly. Use get_section's `figures` list to discover figure numbers; entries whose number is null are uncaptioned diagrams, viewable inline via get_section. The result includes `context_md`: the prose around the figure in its clause."
     )]
     fn get_figure(
         &self,
@@ -657,13 +1066,16 @@ impl rmcp::ServerHandler for SpecServer {
              embedded in the server binary. Every tool takes a `spec` parameter: \
              \"kerml\" for the Kernel Modeling Language (kernel semantics, clauses 7.x; \
              concrete/abstract syntax, clauses 8.x) or \"sysml\" for OMG SysML v2 (the \
-             systems-modeling layer built on KerML). Typical flow: search_sections to \
-             locate a clause, get_section to read it (figures arrive inline as images), \
-             get_syntax for grammar productions, follow_link to chase cross-references, \
+             systems-modeling layer built on KerML). Typical flow: spec_toc to \
+             see the outline, search_sections to locate a clause, get_section to \
+             read it (figures arrive inline as images), get_syntax for grammar \
+             productions, find_symbol to map any identifier to its defining clause \
+             and grammar production, follow_link to chase cross-references, \
              find_implementation to map a clause to kermlc compiler code. The complete \
              OMG worked-example model corpus (`.kerml` and `.sysml` sources) is embedded \
              too: list_examples lists it, get_example returns any model's full text, so \
-             real modeling idioms can be copied instead of inventing syntax.",
+             real modeling idioms can be copied instead of inventing syntax. \
+             semantic_search finds clauses by meaning when lexical search misses.",
         )
     }
 }

@@ -44,6 +44,13 @@ export function detectPlatform() {
 build it (cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) \
 and set SPEC_MCP_BINARY, or run: cargo install --git https://github.com/${GITHUB_REPO} --bin spec-mcp`);
   }
+  // Intel macOS is not released: the semantic engine's onnxruntime
+  // (ort-sys 2.0.0-rc.13) publishes no x86_64-apple-darwin prebuilt, so the
+  // release workflow has no darwin-x64 leg.
+  if (os === "darwin" && arch === "x64") {
+    fail(`no prebuilt spec-mcp binary for darwin/x64 (Intel macOS is not released); \
+build it (cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) and set SPEC_MCP_BINARY, or run: cargo install --git https://github.com/${GITHUB_REPO} --bin spec-mcp`);
+  }
   if (os === "linux" && !process.report?.getReport?.().header?.glibcVersionRuntime) {
     fail(`no prebuilt spec-mcp binary for linux/${arch}; build it \
 (cargo build --release -p spec-mcp in the forge repo, tools/spec-mcp) and set SPEC_MCP_BINARY`);
@@ -80,6 +87,21 @@ function sha256(buf) {
 // file, but pax size/longname overrides are honored defensively).
 import { gunzipSync } from "node:zlib";
 
+// PAX extended-header body, one record per line. GNU tar length-prefixes
+// every record (`206 path=./…`, `29 mtime=…`); libarchive omits the length.
+// Strip the optional leading `<len> ` and parse `keyword=value`.
+function paxRecords(body) {
+  const out = {};
+  for (const line of body.split("\n")) {
+    if (!line) continue;
+    const rec = line.replace(/^\d+\s/, "");
+    const m = /^(\w+)=([\s\S]*)$/.exec(rec);
+    if (!m) continue;
+    out[m[1]] = m[2];
+  }
+  return out;
+}
+
 export function untarOne(gz, memberName) {
   const tar = gunzipSync(gz);
   let off = 0;
@@ -102,11 +124,10 @@ export function untarOne(gz, memberName) {
       continue;
     }
     if (type === "x" || type === "g") {
-      const pax = tar.subarray(dataStart, dataStart + size).toString("utf8");
-      const m = /(?:^|\n)size=(\d+)/.exec(pax);
-      paxSize = m ? parseInt(m[1], 10) : null;
-      const p = /(?:^|\n)path=([^\n]+)/.exec(pax);
-      if (p) paxName = p[1];
+      const kv = paxRecords(tar.subarray(dataStart, dataStart + size).toString("utf8"));
+      if (kv.path !== undefined) paxName = kv.path;
+      if (kv.size !== undefined) paxSize = parseInt(kv.size, 10);
+      else paxSize = null;
       off += Math.ceil(size / 512) * 512;
       continue;
     }
@@ -178,7 +199,7 @@ export function skillSource() {
   const packaged = join(HERE, "..", "skill", "SKILL.md");
   if (existsSync(packaged)) return packaged;
   // Inside the forge repo checkout, fall back to the canonical skill location.
-  const canonical = join(HERE, "..", "..", "..", "..", ".omp", "skills", SKILL_NAME, "SKILL.md");
+  const canonical = join(HERE, "..", "..", "..", "..", "skills", SKILL_NAME, "SKILL.md");
   if (existsSync(canonical)) return canonical;
   fail(`bundled skill missing from package (${packaged})`);
 }

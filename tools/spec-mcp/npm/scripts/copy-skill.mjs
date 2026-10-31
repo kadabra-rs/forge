@@ -1,4 +1,4 @@
-// Copies the canonical repo skill (.omp/skills/sysml-modeling) into the npm
+// Copies the canonical repo skill (skills/sysml-modeling) into the npm
 // package payload (skill/). Runs as the package `prepare` script, i.e. before
 // npm pack/publish, so the published tarball ships the skill without a second
 // maintained copy.
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url))); // npm/
 const repoRoot = join(pkgDir, "..", "..", ".."); // tools/spec-mcp/npm -> repo root
-const src = join(repoRoot, ".omp", "skills", "sysml-modeling");
+const src = join(repoRoot, "skills", "sysml-modeling");
 const dest = join(pkgDir, "skill");
 
 if (!existsSync(join(src, "SKILL.md"))) {
